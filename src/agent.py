@@ -23,6 +23,7 @@ except ImportError:
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SERVICES_SCRIPT = os.path.join(os.path.dirname(__file__), "services.py")
 TOKENS_FILE = os.path.join(PROJECT_ROOT, "TOKENS.txt")
+POKEMONS_FILE = os.path.join(PROJECT_ROOT, "POKEMONS.md")
 
 # Globaler OpenAI Client (wird bei Bedarf initialisiert)
 _openai_client = None
@@ -133,6 +134,24 @@ def create_result(success, steps_taken, reason, messages, selfhosted, total_toke
         "screenshots": saved_screenshots,
         "model_interactions": model_interactions
     }
+
+
+def read_pokemon_context():
+    """Liest die aktuell dokumentierten Pokemon und Attacken fuer den Modell-Kontext."""
+    try:
+        with open(POKEMONS_FILE, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+    except FileNotFoundError:
+        content = "POKEMONS.md existiert noch nicht."
+    except Exception as e:
+        content = f"POKEMONS.md konnte nicht gelesen werden: {e}"
+
+    return (
+        "Aktuell dokumentierte Pokemon und Attacken aus POKEMONS.md:\n"
+        f"{content}\n\n"
+        "Wenn du attack_pokemon nutzt, waehle den Slot der gewuenschten Attacke:\n"
+        "1 = oben links, 2 = oben rechts, 3 = unten links, 4 = unten rechts."
+    )
 
 
 # ─────────────────────────────────────────────────────────
@@ -276,6 +295,16 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
         os.makedirs(screenshots_dir, exist_ok=True)
 
     messages = [{"role": "system", "content": system_prompt}]
+    pokemon_context_message_index = None
+
+    def refresh_pokemon_context():
+        nonlocal pokemon_context_message_index
+        pokemon_context_message = {"role": "system", "content": read_pokemon_context()}
+        if pokemon_context_message_index is None:
+            messages.append(pokemon_context_message)
+            pokemon_context_message_index = len(messages) - 1
+        else:
+            messages[pokemon_context_message_index] = pokemon_context_message
 
     if selfhosted and ollama is None:
         print("❌ Ollama nicht installiert! pip install ollama")
@@ -303,6 +332,8 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 "content": "Bitte starte die Aufgabe. Nutze das Tool 'get_state', um dir als allererstes ein Bild von der Lage zu machen. WICHTIG: Erkläre ab jetzt bei jedem Schritt kurz, was du siehst und WARUM du das nächste Tool nutzt (als reinen Text), bevor du das Tool aufrufst!"
             })
 
+            refresh_pokemon_context()
+
             steps_taken = 0
             success = False
             finish_reason = "Max steps reached"
@@ -312,6 +343,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 print(f"\n--- Schritt {steps_taken}/{max_steps} ---")
                 print(f"🧠 {'Ollama' if selfhosted else 'OpenAI'} ({model_name}) überlegt...")
 
+                refresh_pokemon_context()
                 messages = cleanup_history_to_save_context(messages, selfhosted=selfhosted)
 
                 # ── API-Aufruf ──

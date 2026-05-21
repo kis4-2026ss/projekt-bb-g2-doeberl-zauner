@@ -160,19 +160,20 @@ def add_pokemon(name: str, level: int, location: str, moves: str = "Unbekannt") 
 
 
 @mcp.tool()
-def attack_pokemon(attack_name: str, slot: int) -> str:
+def attack_pokemon(slot: int) -> str:
     """
-    Führt eine Attacke im Pokémon-Kampf aus.
+    Fuehrt eine Attacke im Pokemon-Kampf aus.
 
-    WICHTIG: Rufe diese Funktion NUR auf, wenn du dich im Kampf-Hauptmenü befindest,
+    WICHTIG: Rufe diese Funktion NUR auf, wenn du dich im Kampf-Hauptmenue befindest,
     also wenn rechts unten die vier Optionen 'KAMPF', 'BEUTEL', 'POKEMON', 'FLUCHT' sichtbar sind!
-    Wenn du dir unsicher bist, nutze zuerst get_state() um den Bildschirm zu überprüfen.
+    Wenn du dir unsicher bist, nutze zuerst get_state() um den Bildschirm zu pruefen.
 
-    Die Funktion drückt automatisch 'KAMPF', navigiert zum richtigen Attacken-Slot und bestätigt.
+    Der Agenten-Kontext enthaelt die aktuell dokumentierten Pokemon und Attacken aus POKEMONS.md.
+    Waehle daraus die sinnvollste Attacke und uebergib nur den passenden Slot.
+    Die Funktion drueckt automatisch 'KAMPF', navigiert zum gewaehlten Attacken-Slot und bestaetigt.
 
     Parameter:
-    - attack_name: Name der Attacke, die ausgeführt werden soll (z.B. 'Kratzer', 'Glut', 'Tackle').
-    - slot: Position der Attacke im Attacken-Menü (1 bis 4):
+    - slot: Position der Attacke im Attacken-Menue (1 bis 4):
         1 = oben links
         2 = oben rechts
         3 = unten links
@@ -181,23 +182,16 @@ def attack_pokemon(attack_name: str, slot: int) -> str:
     if not isinstance(slot, int) or not (1 <= slot <= 4):
         return f"Fehler: Slot muss 1, 2, 3 oder 4 sein. Erhalten: {slot}"
 
-    logging.info(f"Tool Aufruf: attack_pokemon('{attack_name}', slot={slot})")
+    logging.info(f"Tool Aufruf: attack_pokemon(slot={slot})")
 
-    # Schritt 1: 'KAMPF' auswählen (A drücken im Hauptkampfmenü)
     emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.15)
     time.sleep(0.4)
 
-    # Schritt 2: Cursor auf Slot 1 (oben links) zurücksetzen
     emulator_controller.send_keyboard_input(TARGET, "up", is_pid=USE_PID, duration=0.1)
     time.sleep(0.1)
     emulator_controller.send_keyboard_input(TARGET, "left", is_pid=USE_PID, duration=0.1)
     time.sleep(0.1)
 
-    # Schritt 3: Zum gewünschten Slot navigieren
-    #   Slot 1 = oben links  (kein Move nötig)
-    #   Slot 2 = oben rechts (→)
-    #   Slot 3 = unten links  (↓)
-    #   Slot 4 = unten rechts (→ + ↓)
     if slot == 2:
         emulator_controller.send_keyboard_input(TARGET, "right", is_pid=USE_PID, duration=0.1)
         time.sleep(0.1)
@@ -210,11 +204,10 @@ def attack_pokemon(attack_name: str, slot: int) -> str:
         emulator_controller.send_keyboard_input(TARGET, "down", is_pid=USE_PID, duration=0.1)
         time.sleep(0.1)
 
-    # Schritt 4: Attacke bestätigen (A drücken)
     emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.15)
 
-    logging.info(f"Attacke '{attack_name}' in Slot {slot} ausgeführt.")
-    return f"Erfolg: Attacke '{attack_name}' (Slot {slot}) wurde ausgeführt."
+    logging.info(f"Attacke in Slot {slot} ausgefuehrt.")
+    return f"Erfolg: Attacke in Slot {slot} wurde ausgefuehrt."
 
 if __name__ == "__main__":
     # Startet den MCP Server. Er lauscht nun auf stdin/stdout.
