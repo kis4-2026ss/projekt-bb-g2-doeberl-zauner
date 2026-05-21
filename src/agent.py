@@ -5,6 +5,7 @@ import copy
 import datetime
 import json
 import base64
+import time
 
 try:
     from mcp import ClientSession, StdioServerParameters
@@ -381,6 +382,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 # ── API-Aufruf ──
                 try:
                     request_messages = copy.deepcopy(messages)
+                    time.sleep(2) # Sonst ist der Agent teilweise zu schnell. Also Gegner greift noch an oder Aktion ist noch nicht fertig
                     if selfhosted:
                         response = ollama.chat(model=model_name, messages=messages, tools=api_tools)
                         token_usage = _log_tokens(model_name, response, selfhosted=True, task_name=task_name)

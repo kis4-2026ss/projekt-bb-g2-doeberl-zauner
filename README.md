@@ -39,7 +39,6 @@ Starte deinen Gameboy Advance Emulator (z.B. **mGBA**) und lade dein Pokémon-Sp
 *   **`benchmark.py`**: Das Orchestrierungs-Skript. Es iteriert über definierte Modelle und Aufgaben, lädt Savestates und speichert am Ende detaillierte Berichte im Ordner `results/`.
 *   **`tasks.json`**: Die Konfigurationsdatei für das Benchmarking. Hier legst du fest, welche Aufgaben getestet werden.
 *   **`Agents.md`**: Der System-Prompt für den Agenten (sein "Gehirn").
-*   **`POKEMONS.md`**: Eine Markdown-Datei, die vom Agenten gepflegt werden soll, um den Team-Status und gefangene Pokémon zu dokumentieren.
 
 ---
 

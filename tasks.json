@@ -1,18 +1,59 @@
 {
   "tasks": [
     {
+      "id": "win fight",
+      "name": "Kampf gewinnen",
+      "savestate_slot": 5,
+      "max_steps": 20,
+      "system_prompt": "Du bist gerade in einem Kampf. Gewinne diesen Trainer kampf. Sobald du den Kampf gewonnen hast, rufe task_completed('win fight') auf.",
+      "pokemon_team": [
+      {
+        "id": 1,
+        "name": "Hydropi",
+        "level": 8,
+        "attacks": [
+          { "id": 1, "name": "Tackle" },
+          { "id": 2, "name": "Heuler" },
+          { "id": 3, "name": "Lehmschelle" }
+        ]
+      }
+      ]
+    },
+    {
       "id": "move",
       "name": "Bewegung",
       "savestate_slot": 2,
       "max_steps": 10,
-      "system_prompt": "Du stehst vor einer Wiese und sollst dich von dem hohen Gras weg bewegen. Du sollst kein Pokemon angreifen, sondern einfach mindesten 2 Felder vom hohen Gras weg sein. Sobald du weit genug weg bist, rufe task_completed('Move!') auf."
+      "system_prompt": "Du stehst vor einer Wiese und sollst dich von dem hohen Gras weg bewegen. Du sollst kein Pokemon angreifen, sondern einfach mindesten 2 Felder vom hohen Gras weg sein. Sobald du weit genug weg bist, rufe task_completed('Move!') auf.",
+      "pokemon_team": [
+      {
+        "id": 1,
+        "name": "Hydropi",
+        "level": 5,
+        "attacks": [
+          { "id": 1, "name": "Tackle" },
+          { "id": 2, "name": "Heuler" }
+        ]
+      }
+      ]
     },
     {
       "id": "attack something",
       "name": "Ein Pokemon angreifen",
       "savestate_slot": 2,
       "max_steps": 50,
-      "system_prompt": "Du stehst vor dem hohen Gras. Dein Ziel ist es, ein Pokemon zu besiegen um zu leveln. Laufe im hohen Gras umher, um Kämpfe auszulösen. Sobald du den Kampf gewonnen hast, rufe task_completed('Attack something') auf."
+      "system_prompt": "Du stehst vor dem hohen Gras. Dein Ziel ist es, ein Pokemon zu besiegen um zu leveln. Laufe im hohen Gras umher, um Kämpfe auszulösen. Sobald du den Kampf gewonnen hast, rufe task_completed('Attack something') auf.",
+      "pokemon_team": [
+      {
+        "id": 1,
+        "name": "Hydropi",
+        "level": 5,
+        "attacks": [
+          { "id": 1, "name": "Tackle" },
+          { "id": 2, "name": "Heuler" }
+        ]
+      }
+      ]
     },
     {
       "id": "heal",

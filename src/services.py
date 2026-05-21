@@ -128,13 +128,13 @@ def attack_pokemon(slot: int) -> str:
 
     logging.info(f"Tool Aufruf: attack_pokemon(slot={slot})")
 
-    emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.15)
-    time.sleep(0.4)
+    emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.1)
+    time.sleep(0.15)
 
     emulator_controller.send_keyboard_input(TARGET, "up", is_pid=USE_PID, duration=0.1)
-    time.sleep(0.1)
+    time.sleep(0.15)
     emulator_controller.send_keyboard_input(TARGET, "left", is_pid=USE_PID, duration=0.1)
-    time.sleep(0.1)
+    time.sleep(0.15)
 
     if slot == 2:
         emulator_controller.send_keyboard_input(TARGET, "right", is_pid=USE_PID, duration=0.1)
@@ -148,11 +148,10 @@ def attack_pokemon(slot: int) -> str:
         emulator_controller.send_keyboard_input(TARGET, "down", is_pid=USE_PID, duration=0.1)
         time.sleep(0.1)
 
-    emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.15)
+    emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.1)
 
     logging.info(f"Attacke in Slot {slot} ausgefuehrt.")
     return f"Erfolg: Attacke in Slot {slot} wurde ausgefuehrt."
-
 
 @mcp.tool()
 def switch_pokemon(slot: int) -> str:
