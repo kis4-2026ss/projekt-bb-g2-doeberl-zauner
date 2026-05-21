@@ -3,7 +3,9 @@ import os
 import asyncio
 import sys
 import time
+import datetime
 import argparse
+import keyboard
 
 from agent import run_agent
 import emulator_controller
@@ -43,18 +45,23 @@ MODELS_OPENAI = [ # Geld In, Cached, out
     "gpt-5-nano-2025-08-07" #  0,05 0,01 0,4
 ]
 
-RESULTS_DIR = "results"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+RESULTS_BASE_DIR = os.path.join(PROJECT_ROOT, "results")
 
 async def main(debug=False, selfhosted=True, api_key=None):
-    if not os.path.exists(RESULTS_DIR):
-        os.makedirs(RESULTS_DIR)
+    # Erstelle einen Unterordner mit Zeitstempel für jeden Benchmark-Durchlauf
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_dir = os.path.join(RESULTS_BASE_DIR, timestamp)
+    os.makedirs(run_dir, exist_ok=True)
+    print(f"📁 Ergebnisse werden gespeichert in: {run_dir}")
 
     try:
-        with open("tasks.json", "r", encoding="utf-8") as f:
+        tasks_file = os.path.join(PROJECT_ROOT, "tasks.json")
+        with open(tasks_file, "r", encoding="utf-8") as f:
             tasks_data = json.load(f)
             tasks = tasks_data.get("tasks", [])
     except FileNotFoundError:
-        print("Konnte tasks.json nicht finden. Bitte sicherstellen, dass die Datei existiert.")
+        print(f"Konnte tasks.json nicht unter {tasks_file} finden. Bitte sicherstellen, dass die Datei existiert.")
         return
 
     models = MODELS_OLLAMA if selfhosted else MODELS_OPENAI
@@ -69,9 +76,26 @@ async def main(debug=False, selfhosted=True, api_key=None):
 
     report = []
 
+    cancel_requested = False
+
+    def on_ctrl_x():
+        nonlocal cancel_requested
+        cancel_requested = True
+        print("\n\n🛑 ABBRUCH-ANFORDERUNG ERFASST (Strg+X)!")
+        print("Der aktuelle Task wird noch beendet, danach stoppt der Benchmark und speichert die Ergebnisse.\n")
+
+    try:
+        keyboard.add_hotkey('ctrl+x', on_ctrl_x)
+    except Exception as e:
+        print(f"⚠️ Warnung: Strg+X Hotkey konnte nicht registriert werden: {e}")
+
     try:
         for model in models:
+            if cancel_requested:
+                break
             for task in tasks:
+                if cancel_requested:
+                    break
                 task_id = task["id"]
                 slot = task["savestate_slot"]
                 max_steps = task["max_steps"]
@@ -92,30 +116,53 @@ async def main(debug=False, selfhosted=True, api_key=None):
                 emulator_controller.send_keyboard_input(target, key, is_pid=use_pid, duration=0.2)
                 print("Warte kurz, bis das Spiel geladen ist...")
                 time.sleep(2) # Wartezeit, damit der Savestate sicher geladen ist
+                model_dir = os.path.join(run_dir, model.replace(":", "_"))
+                task_dir = os.path.join(model_dir, task_id)
+                screenshots_dir = os.path.join(task_dir, "screenshots")
+                os.makedirs(screenshots_dir, exist_ok=True)
                 
                 # Führe den autonomen Agenten aus
                 result = await run_agent(model_name=model, system_prompt=prompt, max_steps=max_steps,
                                         debug=debug, selfhosted=selfhosted, api_key=api_key,
-                                        task_name=task.get("name", task_id))
+                                        task_name=task.get("name", task_id),
+                                        screenshots_dir=screenshots_dir)
                 
                 # Speichere die Ergebnisse
+                log_file = os.path.join(task_dir, "conversation_log.json")
+                interactions_file = os.path.join(task_dir, "model_interactions.json")
+                tokens_file = os.path.join(task_dir, "tokens.json")
+                task_result_file = os.path.join(task_dir, "result.json")
+
                 task_result = {
                     "model": model,
                     "task_id": task_id,
+                    "task_name": task.get("name", task_id),
                     "success": result["success"],
                     "steps_taken": result["steps_taken"],
-                    "reason": result["reason"]
+                    "reason": result["reason"],
+                    "tokens": result.get("tokens", {"input": 0, "cached": 0, "output": 0, "total": 0}),
+                    "screenshots": result.get("screenshots", []),
+                    "files": {
+                        "conversation_log": log_file,
+                        "model_interactions": interactions_file,
+                        "tokens": tokens_file,
+                        "result": task_result_file,
+                        "screenshots_dir": screenshots_dir
+                    }
                 }
                 report.append(task_result)
                 
-                # Log des Durchlaufs detailliert speichern
-                model_dir = os.path.join(RESULTS_DIR, model.replace(":", "_"))
-                if not os.path.exists(model_dir):
-                    os.makedirs(model_dir)
-                    
-                log_file = os.path.join(model_dir, f"{task_id}_log.json")
                 with open(log_file, "w", encoding="utf-8") as f:
                     json.dump(result["log"], f, indent=4, ensure_ascii=False, cls=BenchmarkEncoder)
+
+                with open(interactions_file, "w", encoding="utf-8") as f:
+                    json.dump(result.get("model_interactions", []), f, indent=4, ensure_ascii=False, cls=BenchmarkEncoder)
+
+                with open(tokens_file, "w", encoding="utf-8") as f:
+                    json.dump(result.get("tokens", {}), f, indent=4, ensure_ascii=False, cls=BenchmarkEncoder)
+
+                with open(task_result_file, "w", encoding="utf-8") as f:
+                    json.dump(task_result, f, indent=4, ensure_ascii=False, cls=BenchmarkEncoder)
                     
                 print(f"\n>>> TASK BEENDET. Erfolg: {result['success']} in {result['steps_taken']} Schritten.")
                 print(f">>> Detailliertes Log gespeichert unter {log_file}")
@@ -125,9 +172,14 @@ async def main(debug=False, selfhosted=True, api_key=None):
         print("Speichere bisher gesammelte Ergebnisse...")
             
     finally:
+        try:
+            keyboard.remove_hotkey(on_ctrl_x)
+        except Exception:
+            pass
+
         # Am Ende einen maschinenlesbaren Gesamtbericht erstellen, auch bei Abbruch
         if report:
-            report_file = os.path.join(RESULTS_DIR, "benchmark_report.json")
+            report_file = os.path.join(run_dir, "benchmark_report.json")
             with open(report_file, "w", encoding="utf-8") as f:
                 json.dump(report, f, indent=4, ensure_ascii=False, cls=BenchmarkEncoder)
                 

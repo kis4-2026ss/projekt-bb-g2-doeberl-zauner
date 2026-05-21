@@ -5,6 +5,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
 try:
     import pyautogui
     import pygetwindow as gw
@@ -89,11 +91,14 @@ def take_screenshot(target, is_pid=False, output_filename="emulator_screenshot.p
         screenshot = pyautogui.screenshot(region=region)
         
         # 1. Normalen Screenshot speichern (z.B. für MCP)
+        if not os.path.isabs(output_filename):
+            output_filename = os.path.join(PROJECT_ROOT, output_filename)
+
         screenshot.save(output_filename)
         logger.info(f"Screenshot erfolgreich gespeichert unter: {output_filename}")
         
         # 2. Backup mit Zeitstempel speichern
-        backup_dir = "BackUp_Ordner"
+        backup_dir = os.path.join(PROJECT_ROOT, "BackUp_Ordner")
         if not os.path.exists(backup_dir):
             os.makedirs(backup_dir)
             

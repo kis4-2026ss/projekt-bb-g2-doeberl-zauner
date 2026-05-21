@@ -2,11 +2,14 @@ import os
 import logging
 from mcp.server.fastmcp import FastMCP, Image
 import emulator_controller
+import time
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 # Konfiguriere das Logging so, dass es in eine Datei schreibt und NICHT nach stdout.
 # Standard-Output (stdout) wird zwingend von MCP für die JSON-Kommunikation gebraucht!
 logging.basicConfig(
-    filename='mcp_server.log',
+    filename=os.path.join(PROJECT_ROOT, 'mcp_server.log'),
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
@@ -60,7 +63,7 @@ def get_state() -> Image:
     Rufe dieses Tool auf, wenn du sehen musst, wo du dich befindest, welche Pokémon 
     angezeigt werden oder welcher Text gerade auf dem Bildschirm steht.
     """
-    screenshot_path = "mcp_current_state.png"
+    screenshot_path = os.path.join(PROJECT_ROOT, "mcp_current_state.png")
     logging.info("Tool Aufruf: get_state(). Erstelle Screenshot...")
     
     success = emulator_controller.take_screenshot(TARGET, is_pid=USE_PID, output_filename=screenshot_path)
@@ -107,7 +110,8 @@ def get_pokemon_log() -> str:
     Nutze dies, um zu sehen, welche Pokémon aktuell im Team oder in der Box dokumentiert sind.
     """
     try:
-        with open("POKEMONS.md", "r", encoding="utf-8") as f:
+        pokemon_file = os.path.join(PROJECT_ROOT, "POKEMONS.md")
+        with open(pokemon_file, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         return "Fehler: Die Datei POKEMONS.md existiert noch nicht."
@@ -124,7 +128,8 @@ def update_pokemon_log(content: str) -> str:
     und schreibe ihn mit dieser Funktion zurück.
     """
     try:
-        with open("POKEMONS.md", "w", encoding="utf-8") as f:
+        pokemon_file = os.path.join(PROJECT_ROOT, "POKEMONS.md")
+        with open(pokemon_file, "w", encoding="utf-8") as f:
             f.write(content)
         logging.info("Tool Aufruf: update_pokemon_log. POKEMONS.md wurde überschrieben.")
         return "Erfolg: POKEMONS.md wurde erfolgreich aktualisiert."
@@ -144,13 +149,72 @@ def add_pokemon(name: str, level: int, location: str, moves: str = "Unbekannt") 
     """
     entry = f"\n- **{name}** (Lv. {level}) | Ort: {location} | Attacken: {moves}"
     try:
-        with open("POKEMONS.md", "a", encoding="utf-8") as f:
+        pokemon_file = os.path.join(PROJECT_ROOT, "POKEMONS.md")
+        with open(pokemon_file, "a", encoding="utf-8") as f:
             f.write(entry)
         logging.info(f"Tool Aufruf: add_pokemon. {name} zu POKEMONS.md hinzugefügt.")
         return f"Erfolg: {name} wurde der POKEMONS.md hinzugefügt."
     except Exception as e:
         logging.error(f"Fehler beim Anhängen an POKEMONS.md: {e}")
         return f"Fehler beim Anhängen an POKEMONS.md: {e}"
+
+
+@mcp.tool()
+def attack_pokemon(attack_name: str, slot: int) -> str:
+    """
+    Führt eine Attacke im Pokémon-Kampf aus.
+
+    WICHTIG: Rufe diese Funktion NUR auf, wenn du dich im Kampf-Hauptmenü befindest,
+    also wenn rechts unten die vier Optionen 'KAMPF', 'BEUTEL', 'POKEMON', 'FLUCHT' sichtbar sind!
+    Wenn du dir unsicher bist, nutze zuerst get_state() um den Bildschirm zu überprüfen.
+
+    Die Funktion drückt automatisch 'KAMPF', navigiert zum richtigen Attacken-Slot und bestätigt.
+
+    Parameter:
+    - attack_name: Name der Attacke, die ausgeführt werden soll (z.B. 'Kratzer', 'Glut', 'Tackle').
+    - slot: Position der Attacke im Attacken-Menü (1 bis 4):
+        1 = oben links
+        2 = oben rechts
+        3 = unten links
+        4 = unten rechts
+    """
+    if not isinstance(slot, int) or not (1 <= slot <= 4):
+        return f"Fehler: Slot muss 1, 2, 3 oder 4 sein. Erhalten: {slot}"
+
+    logging.info(f"Tool Aufruf: attack_pokemon('{attack_name}', slot={slot})")
+
+    # Schritt 1: 'KAMPF' auswählen (A drücken im Hauptkampfmenü)
+    emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.15)
+    time.sleep(0.4)
+
+    # Schritt 2: Cursor auf Slot 1 (oben links) zurücksetzen
+    emulator_controller.send_keyboard_input(TARGET, "up", is_pid=USE_PID, duration=0.1)
+    time.sleep(0.1)
+    emulator_controller.send_keyboard_input(TARGET, "left", is_pid=USE_PID, duration=0.1)
+    time.sleep(0.1)
+
+    # Schritt 3: Zum gewünschten Slot navigieren
+    #   Slot 1 = oben links  (kein Move nötig)
+    #   Slot 2 = oben rechts (→)
+    #   Slot 3 = unten links  (↓)
+    #   Slot 4 = unten rechts (→ + ↓)
+    if slot == 2:
+        emulator_controller.send_keyboard_input(TARGET, "right", is_pid=USE_PID, duration=0.1)
+        time.sleep(0.1)
+    elif slot == 3:
+        emulator_controller.send_keyboard_input(TARGET, "down", is_pid=USE_PID, duration=0.1)
+        time.sleep(0.1)
+    elif slot == 4:
+        emulator_controller.send_keyboard_input(TARGET, "right", is_pid=USE_PID, duration=0.1)
+        time.sleep(0.1)
+        emulator_controller.send_keyboard_input(TARGET, "down", is_pid=USE_PID, duration=0.1)
+        time.sleep(0.1)
+
+    # Schritt 4: Attacke bestätigen (A drücken)
+    emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.15)
+
+    logging.info(f"Attacke '{attack_name}' in Slot {slot} ausgeführt.")
+    return f"Erfolg: Attacke '{attack_name}' (Slot {slot}) wurde ausgeführt."
 
 if __name__ == "__main__":
     # Startet den MCP Server. Er lauscht nun auf stdin/stdout.

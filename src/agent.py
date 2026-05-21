@@ -4,6 +4,7 @@ import sys
 import copy
 import datetime
 import json
+import base64
 
 try:
     from mcp import ClientSession, StdioServerParameters
@@ -19,8 +20,9 @@ try:
 except ImportError:
     ollama = None
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SERVICES_SCRIPT = os.path.join(os.path.dirname(__file__), "services.py")
-TOKENS_FILE = os.path.join(os.path.dirname(__file__), "TOKENS.txt")
+TOKENS_FILE = os.path.join(PROJECT_ROOT, "TOKENS.txt")
 
 # Globaler OpenAI Client (wird bei Bedarf initialisiert)
 _openai_client = None
@@ -80,8 +82,57 @@ def _log_tokens(model_name, response, selfhosted, task_name="Unbekannt"):
             f.write(line)
 
         print(f"📊 Tokens: Input={input_tokens}, Cached={cached_tokens}, Output={output_tokens}, Gesamt={total_tokens}")
+        return {
+            "input": input_tokens,
+            "cached": cached_tokens,
+            "output": output_tokens,
+            "total": total_tokens
+        }
     except Exception as e:
         print(f"⚠️ Token-Logging fehlgeschlagen: {e}")
+        return {"input": 0, "cached": 0, "output": 0, "total": 0}
+
+
+def _save_screenshot_from_b64(image_b64, directory, filename):
+    """Decodiert ein Base64-Bild und speichert es als PNG im angegebenen Verzeichnis."""
+    try:
+        file_path = os.path.join(directory, filename)
+        with open(file_path, "wb") as f:
+            f.write(base64.b64decode(image_b64))
+        return file_path
+    except Exception as e:
+        print(f"⚠️ Fehler beim Speichern des Screenshots {filename}: {e}")
+        return None
+
+
+def convert_to_serializable(value):
+    """Wandelt SDK-Objekte in JSON-kompatible Strukturen um."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    if isinstance(value, dict):
+        return {key: convert_to_serializable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [convert_to_serializable(item) for item in value]
+    if isinstance(value, tuple):
+        return [convert_to_serializable(item) for item in value]
+    if hasattr(value, "__dict__"):
+        return {key: convert_to_serializable(item) for key, item in value.__dict__.items()}
+    return value
+
+
+def create_result(success, steps_taken, reason, messages, selfhosted, total_tokens_used, saved_screenshots, model_interactions):
+    """Erstellt die einheitliche Ergebnisstruktur eines Agenten-Durchlaufs."""
+    return {
+        "success": success,
+        "steps_taken": steps_taken,
+        "reason": reason,
+        "log": get_clean_conversation_log(messages, selfhosted),
+        "tokens": total_tokens_used,
+        "screenshots": saved_screenshots,
+        "model_interactions": model_interactions
+    }
 
 
 # ─────────────────────────────────────────────────────────
@@ -124,7 +175,26 @@ def get_clean_conversation_log(messages, selfhosted=True):
     clean_messages = []
 
     for msg in messages:
-        msg_copy = copy.deepcopy(msg)
+        # Falls msg kein dict ist (z.B. ollama.Message), in ein dict konvertieren
+        if not isinstance(msg, dict):
+            if hasattr(msg, "model_dump"):
+                msg_dict = msg.model_dump()
+            elif hasattr(msg, "dict"):
+                msg_dict = msg.dict()
+            elif hasattr(msg, "__dict__"):
+                msg_dict = dict(msg.__dict__)
+            else:
+                try:
+                    msg_dict = dict(msg)
+                except TypeError:
+                    msg_dict = {}
+                    for attr in ["role", "content", "images", "tool_calls"]:
+                        if hasattr(msg, attr):
+                            msg_dict[attr] = getattr(msg, attr)
+        else:
+            msg_dict = msg
+
+        msg_copy = copy.deepcopy(msg_dict)
         timestamps = msg_copy.pop("image_timestamps", [])
 
         if selfhosted:
@@ -155,7 +225,7 @@ def get_clean_conversation_log(messages, selfhosted=True):
 
 async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                     debug: bool = False, selfhosted: bool = True, api_key: str = None,
-                    task_name: str = "Unbekannt") -> dict:
+                    task_name: str = "Unbekannt", screenshots_dir: str = None) -> dict:
     """
     Startet einen Agenten-Durchlauf für eine spezifische Aufgabe.
 
@@ -166,14 +236,55 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
     backend = "Ollama (lokal)" if selfhosted else "OpenAI API"
     print(f"\n🚀 Starte Agent mit Modell: '{model_name}' via {backend} (Max Steps: {max_steps})")
 
+    # Initialisiere Token-Tracker und Screenshot-Liste
+    total_tokens_used = {"input": 0, "cached": 0, "output": 0, "total": 0}
+    saved_screenshots = []
+    model_interactions = []
+
+    def add_tokens(t_dict):
+        if t_dict:
+            for k in total_tokens_used:
+                total_tokens_used[k] += t_dict.get(k, 0)
+
+    def save_screenshot(image_b64, prefix, step_number):
+        if not image_b64 or not screenshots_dir:
+            return None
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+        filename = f"{prefix}_{step_number}_{timestamp}.png"
+        saved_path = _save_screenshot_from_b64(image_b64, screenshots_dir, filename)
+        if saved_path:
+            saved_screenshots.append(filename)
+            return filename
+        return None
+
+    def add_model_interaction(phase, step_number, request_messages, response_payload, token_usage, tools_payload=None):
+        model_interactions.append({
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "model": model_name,
+            "task": task_name,
+            "phase": phase,
+            "step": step_number,
+            "request": {
+                "messages": get_clean_conversation_log(request_messages, selfhosted),
+                "tools": convert_to_serializable(tools_payload)
+            },
+            "response": convert_to_serializable(response_payload),
+            "tokens": token_usage
+        })
+
+    if screenshots_dir:
+        os.makedirs(screenshots_dir, exist_ok=True)
+
+    messages = [{"role": "system", "content": system_prompt}]
+
     if selfhosted and ollama is None:
         print("❌ Ollama nicht installiert! pip install ollama")
-        return {"success": False, "steps_taken": 0, "reason": "Ollama nicht installiert", "log": []}
+        return create_result(False, 0, "Ollama nicht installiert", messages, selfhosted, total_tokens_used,
+                             saved_screenshots, model_interactions)
     if not selfhosted:
         _init_openai(api_key)
 
     server_params = StdioServerParameters(command="python", args=[SERVICES_SCRIPT])
-    messages = [{"role": "system", "content": system_prompt}]
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -205,16 +316,43 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
 
                 # ── API-Aufruf ──
                 try:
+                    request_messages = copy.deepcopy(messages)
                     if selfhosted:
                         response = ollama.chat(model=model_name, messages=messages, tools=api_tools)
-                        _log_tokens(model_name, response, selfhosted=True, task_name=task_name)
+                        token_usage = _log_tokens(model_name, response, selfhosted=True, task_name=task_name)
+                        add_tokens(token_usage)
+                        add_model_interaction("step", steps_taken, request_messages, response, token_usage, api_tools)
                         response_message = response['message']
-                        messages.append(response_message)
-                        content_text = response_message.get('content', '') if isinstance(response_message, dict) else getattr(response_message, 'content', '')
-                        tool_calls = response_message.get('tool_calls', []) if isinstance(response_message, dict) else getattr(response_message, 'tool_calls', [])
+                        
+                        # In Standard-Dict umwandeln
+                        if not isinstance(response_message, dict):
+                            if hasattr(response_message, "model_dump"):
+                                response_message_dict = response_message.model_dump()
+                            elif hasattr(response_message, "dict"):
+                                response_message_dict = response_message.dict()
+                            else:
+                                try:
+                                    response_message_dict = dict(response_message)
+                                except TypeError:
+                                    response_message_dict = {
+                                        "role": getattr(response_message, "role", "assistant"),
+                                        "content": getattr(response_message, "content", "")
+                                    }
+                                    if hasattr(response_message, "images"):
+                                        response_message_dict["images"] = response_message.images
+                                    if hasattr(response_message, "tool_calls"):
+                                        response_message_dict["tool_calls"] = response_message.tool_calls
+                        else:
+                            response_message_dict = response_message
+                            
+                        messages.append(response_message_dict)
+                        content_text = response_message_dict.get('content', '') or ''
+                        tool_calls = response_message_dict.get('tool_calls', []) or []
                     else:
                         resp = _openai_client.chat.completions.create(model=model_name, messages=messages, tools=api_tools)
-                        _log_tokens(model_name, resp, selfhosted=False, task_name=task_name)
+                        token_usage = _log_tokens(model_name, resp, selfhosted=False, task_name=task_name)
+                        add_tokens(token_usage)
+                        add_model_interaction("step", steps_taken, request_messages, resp, token_usage, api_tools)
                         choice = resp.choices[0].message
                         # Als serialisierbares Dict speichern
                         asst_msg = {"role": "assistant", "content": choice.content or ""}
@@ -230,8 +368,8 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
 
                 except Exception as e:
                     print(f"\n❌ API Fehler: {e}")
-                    return {"success": False, "steps_taken": steps_taken, "reason": f"API Error: {e}",
-                            "log": get_clean_conversation_log(messages, selfhosted)}
+                    return create_result(False, steps_taken, f"API Error: {e}", messages, selfhosted,
+                                         total_tokens_used, saved_screenshots, model_interactions)
 
                 if content_text:
                     print(f"\n🧠 [Gedanken des Modells]: {content_text.strip()}")
@@ -269,19 +407,130 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                                 tool_text_result.append("Screenshot erfolgreich erstellt.")
                         result_str = "\n".join(tool_text_result)
 
-                        # Benchmark-Signal prüfen
+                        # Benchmark-Signal prüfen → Validierung mit Screenshot
                         if "BENCHMARK_SIGNAL: TASK_COMPLETED" in result_str:
-                            success, finish_reason = True, result_str
-                            print(f"\n🎉 AUFGABE ERFOLGREICH BEENDET: {result_str}")
+                            # Dieser Schritt zählt NICHT → zurücksetzen
+                            steps_taken -= 1
+                            print(f"\n🔍 Task-Completed aufgerufen. Starte Validierung mit Screenshot...")
+
                             if selfhosted:
                                 messages.append({"role": "tool", "name": func_name, "content": result_str})
                             else:
                                 messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_str})
-                            return {"success": success, "steps_taken": steps_taken, "reason": finish_reason,
-                                    "log": get_clean_conversation_log(messages, selfhosted)}
+
+                            # 1. Screenshot machen über MCP
+                            val_image_b64 = None
+                            try:
+                                validation_screenshot = await session.call_tool("get_state", {})
+                                for part in validation_screenshot.content:
+                                    if part.type == "image":
+                                        val_image_b64 = part.data
+                            except Exception as ve:
+                                print(f"⚠️ Validierungs-Screenshot fehlgeschlagen: {ve}")
+
+                            if val_image_b64:
+                                val_ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                                val_filename = save_screenshot(val_image_b64, "validation", steps_taken)
+                                val_label = val_filename or f"mcp_current_state_{val_ts}"
+
+                                # 2. Screenshot dem Modell zur Validierung senden
+                                val_prompt = (
+                                    f"Du hast behauptet, die Aufgabe abgeschlossen zu haben. Grund: {result_str}\n\n"
+                                    "Hier ist ein aktueller Screenshot des Spiels. Prüfe GENAU ob die Aufgabe "
+                                    "wirklich erfolgreich erledigt wurde.\n\n"
+                                    "Antworte NUR mit einem einzelnen Wort:\n"
+                                    "- 'JA' wenn die Aufgabe auf dem Screenshot eindeutig als erledigt erkennbar ist.\n"
+                                    "- 'NEIN' wenn die Aufgabe NICHT erledigt ist oder du dir unsicher bist."
+                                )
+
+                                if selfhosted:
+                                    messages.append({
+                                        "role": "user",
+                                        "content": val_prompt,
+                                        "images": [val_image_b64],
+                                        "image_timestamps": [val_label]
+                                    })
+                                    try:
+                                        request_messages = copy.deepcopy(messages)
+                                        val_response = ollama.chat(model=model_name, messages=messages)
+                                        token_usage = _log_tokens(model_name, val_response, selfhosted=True, task_name=task_name)
+                                        add_tokens(token_usage)
+                                        add_model_interaction("validation", steps_taken, request_messages, val_response, token_usage)
+                                        val_msg = val_response['message']
+                                        if isinstance(val_msg, dict):
+                                            val_answer = val_msg.get('content', '').strip().upper()
+                                            val_msg_copy = val_msg
+                                        else:
+                                            val_answer = getattr(val_msg, 'content', '').strip().upper()
+                                            val_msg_copy = {
+                                                "role": getattr(val_msg, "role", "assistant"),
+                                                "content": getattr(val_msg, "content", "")
+                                            }
+                                        messages.append(val_msg_copy)
+                                    except Exception as e:
+                                        print(f"⚠️ Validierungs-API-Fehler: {e}")
+                                        val_answer = "NEIN"
+                                        messages.append({"role": "assistant", "content": "NEIN (Fehler bei API)"})
+                                else:
+                                    messages.append({
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": val_prompt},
+                                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
+                                        ],
+                                        "image_timestamps": [val_label]
+                                    })
+                                    try:
+                                        request_messages = copy.deepcopy(messages)
+                                        val_resp = _openai_client.chat.completions.create(model=model_name, messages=messages)
+                                        token_usage = _log_tokens(model_name, val_resp, selfhosted=False, task_name=task_name)
+                                        add_tokens(token_usage)
+                                        add_model_interaction("validation", steps_taken, request_messages, val_resp, token_usage)
+                                        val_choice = val_resp.choices[0].message
+                                        val_answer = val_choice.content.strip().upper()
+                                        messages.append({"role": "assistant", "content": val_choice.content or ""})
+                                    except Exception as e:
+                                        print(f"⚠️ Validierungs-API-Fehler: {e}")
+                                        val_answer = "NEIN"
+                                        messages.append({"role": "assistant", "content": "NEIN (Fehler bei API)"})
+
+                                print(f"🔍 Validierungs-Ergebnis: {val_answer}")
+
+                                if val_answer.startswith("JA"):
+                                    success, finish_reason = True, result_str
+                                    print(f"\n🎉 AUFGABE VALIDIERT UND ERFOLGREICH BEENDET!")
+                                    return create_result(success, steps_taken, finish_reason, messages, selfhosted,
+                                                         total_tokens_used, saved_screenshots, model_interactions)
+                                else:
+                                    print("❌ Validierung fehlgeschlagen! Aufgabe ist NICHT erledigt. Agent macht weiter.")
+                                    messages.append({
+                                        "role": "user",
+                                        "content": "Die Validierung hat ergeben, dass die Aufgabe NICHT abgeschlossen ist. "
+                                                   "Bitte analysiere den aktuellen Screenshot erneut und mache weiter!",
+                                        "images": [val_image_b64],
+                                        "image_timestamps": [val_label]
+                                    } if selfhosted else {
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "text", "text": "Die Validierung hat ergeben, dass die Aufgabe NICHT abgeschlossen ist. "
+                                                                     "Bitte analysiere den aktuellen Screenshot erneut und mache weiter!"},
+                                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
+                                        ],
+                                        "image_timestamps": [val_label]
+                                    })
+                                    continue  # Nächster Schleifendurchlauf (ohne Step-Verbrauch)
+                            else:
+                                # Kein Screenshot möglich → sicherheitshalber weitermachen
+                                print("⚠️ Kein Validierungs-Screenshot möglich. Agent macht weiter.")
+                                messages.append({"role": "user", "content": "Validierung konnte nicht durchgeführt werden. Mache weiter mit der Aufgabe."})
+                                continue
 
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                         ts_label = f"mcp_current_state_{timestamp}"
+                        if image_b64:
+                            screenshot_filename = save_screenshot(image_b64, "step", steps_taken)
+                            if screenshot_filename:
+                                ts_label = screenshot_filename
 
                         # Tool-Ergebnis + ggf. Bild anhängen
                         if selfhosted:
@@ -316,9 +565,100 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 await asyncio.sleep(1)
 
             # Max Steps erreicht
-            print("\n⏰ Maximale Anzahl an Schritten erreicht. Abbruch.")
-            return {"success": False, "steps_taken": steps_taken, "reason": finish_reason,
-                    "log": get_clean_conversation_log(messages, selfhosted)}
+            print("\n⏰ Maximale Anzahl an Schritten erreicht. Starte automatische Endvalidierung des letzten Zustands...")
+            
+            # 1. Screenshot machen über MCP
+            val_image_b64 = None
+            try:
+                validation_screenshot = await session.call_tool("get_state", {})
+                for part in validation_screenshot.content:
+                    if part.type == "image":
+                        val_image_b64 = part.data
+            except Exception as ve:
+                print(f"⚠️ Endvalidierungs-Screenshot fehlgeschlagen: {ve}")
+
+            if val_image_b64:
+                val_filename = save_screenshot(val_image_b64, "final_validation", steps_taken)
+                # 2. Screenshot dem Modell zur Validierung senden
+                val_prompt = (
+                    "Die maximale Anzahl an Schritten wurde erreicht. Bitte prüfe den aktuellen Screenshot, "
+                    "ob das Ziel der Aufgabe vielleicht im allerletzten Schritt doch noch erreicht wurde.\n\n"
+                    f"Aufgabenstellung (System Prompt):\n{system_prompt}\n\n"
+                    "Antworte NUR mit einem einzelnen Wort:\n"
+                    "- 'JA' wenn das Ziel auf dem Screenshot eindeutig als erreicht erkennbar ist.\n"
+                    "- 'NEIN' wenn das Ziel NICHT erreicht ist oder du dir unsicher bist."
+                )
+                val_ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                val_label = val_filename or f"mcp_current_state_{val_ts}"
+                val_messages = list(messages)
+
+                if selfhosted:
+                    val_messages.append({
+                        "role": "user",
+                        "content": val_prompt,
+                        "images": [val_image_b64],
+                        "image_timestamps": [val_label]
+                    })
+                    try:
+                        request_messages = copy.deepcopy(val_messages)
+                        val_response = ollama.chat(model=model_name, messages=val_messages)
+                        token_usage = _log_tokens(model_name, val_response, selfhosted=True, task_name=task_name)
+                        add_tokens(token_usage)
+                        add_model_interaction("final_validation", steps_taken, request_messages, val_response, token_usage)
+                        val_answer = val_response['message'].get('content', '').strip().upper()
+                    except Exception as e:
+                        print(f"⚠️ Endvalidierungs-API-Fehler: {e}")
+                        val_answer = "NEIN"
+                else:
+                    val_messages.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": val_prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
+                        ],
+                        "image_timestamps": [val_label]
+                    })
+                    try:
+                        request_messages = copy.deepcopy(val_messages)
+                        val_resp = _openai_client.chat.completions.create(model=model_name, messages=val_messages)
+                        token_usage = _log_tokens(model_name, val_resp, selfhosted=False, task_name=task_name)
+                        add_tokens(token_usage)
+                        add_model_interaction("final_validation", steps_taken, request_messages, val_resp, token_usage)
+                        val_answer = val_resp.choices[0].message.content.strip().upper()
+                    except Exception as e:
+                        print(f"⚠️ Endvalidierungs-API-Fehler: {e}")
+                        val_answer = "NEIN"
+
+                print(f"🔍 Endvalidierungs-Ergebnis: {val_answer}")
+
+                if val_answer.startswith("JA"):
+                    success = True
+                    finish_reason = "Task im letzten Schritt abgeschlossen (durch automatische Endvalidierung bestätigt)"
+                    print(f"\n🎉 ENDVALIDIERUNG ERFOLGREICH! Aufgabe im letzten Schritt gelöst.")
+                    
+                    if selfhosted:
+                        messages.append({
+                            "role": "user",
+                            "content": "Automatische Endvalidierung erfolgreich.",
+                            "images": [val_image_b64],
+                            "image_timestamps": [val_label]
+                        })
+                    else:
+                        messages.append({
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Automatische Endvalidierung erfolgreich."},
+                                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
+                            ],
+                            "image_timestamps": [val_label]
+                        })
+                    
+                    return create_result(True, steps_taken, finish_reason, messages, selfhosted,
+                                         total_tokens_used, saved_screenshots, model_interactions)
+
+            print("\n⏰ Endvalidierung nicht erfolgreich oder kein Screenshot möglich. Abbruch.")
+            return create_result(False, steps_taken, finish_reason, messages, selfhosted,
+                                 total_tokens_used, saved_screenshots, model_interactions)
 
 
 if __name__ == "__main__":
@@ -340,7 +680,8 @@ if __name__ == "__main__":
     async def run_default():
         prompt = "Du bist ein Pokémon-Agent. Nutze deine Tools zum Spielen."
         try:
-            with open("Agents.md", "r", encoding="utf-8") as f:
+            agents_file = os.path.join(PROJECT_ROOT, "Agents.md")
+            with open(agents_file, "r", encoding="utf-8") as f:
                 prompt = f.read()
         except FileNotFoundError:
             pass
