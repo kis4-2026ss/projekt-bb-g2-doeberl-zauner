@@ -23,7 +23,6 @@ except ImportError:
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SERVICES_SCRIPT = os.path.join(os.path.dirname(__file__), "services.py")
 TOKENS_FILE = os.path.join(PROJECT_ROOT, "TOKENS.txt")
-POKEMONS_FILE = os.path.join(PROJECT_ROOT, "POKEMONS.md")
 
 # Globaler OpenAI Client (wird bei Bedarf initialisiert)
 _openai_client = None
@@ -136,21 +135,53 @@ def create_result(success, steps_taken, reason, messages, selfhosted, total_toke
     }
 
 
-def read_pokemon_context():
-    """Liest die aktuell dokumentierten Pokemon und Attacken fuer den Modell-Kontext."""
-    try:
-        with open(POKEMONS_FILE, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-    except FileNotFoundError:
-        content = "POKEMONS.md existiert noch nicht."
-    except Exception as e:
-        content = f"POKEMONS.md konnte nicht gelesen werden: {e}"
+def format_task_pokemon_context(task_pokemon):
+    """Formatiert die Pokemon- und Attacken-Slots aus der Task-Konfiguration."""
+    if not task_pokemon:
+        return "In diesem Task wurden keine Pokemon-Slots konfiguriert."
 
+    lines = ["Pokemon-Slots aus der Task-Konfiguration:"]
+    for index, pokemon in enumerate(task_pokemon, start=1):
+        if not isinstance(pokemon, dict):
+            lines.append(f"Pokemon {index}: {pokemon}")
+            continue
+
+        pokemon_id = pokemon.get("id", index)
+        name = pokemon.get("name", "Unbekannt")
+        level = pokemon.get("level")
+        attacks = pokemon.get("attacks", pokemon.get("moves", []))
+        level_text = f" Lv. {level}" if level is not None else ""
+        lines.append(f"Pokemon {pokemon_id}: {name}{level_text}")
+
+        if not attacks:
+            lines.append("  Attacken: nicht konfiguriert")
+            continue
+
+        for attack_index, attack in enumerate(attacks, start=1):
+            if isinstance(attack, dict):
+                attack_id = attack.get("id", attack_index)
+                attack_name = attack.get("name", "Unbekannt")
+                attack_type = attack.get("type")
+                attack_text = f"  Attacke {attack_id}: {attack_name}"
+                if attack_type:
+                    attack_text += f" ({attack_type})"
+                lines.append(attack_text)
+            else:
+                lines.append(f"  Attacke {attack_index}: {attack}")
+
+    lines.append("Pokemon-IDs gehen von 1 bis 6. Attacken-IDs gehen von 1 bis 4.")
+    lines.append("attack_pokemon nutzt die Attacken-ID des aktuell aktiven Pokemon als Slot.")
+    lines.append("switch_pokemon nutzt die Pokemon-ID als Slot.")
+    return "\n".join(lines)
+
+
+def build_pokemon_context(task_pokemon=None):
+    """Erstellt den Pokemon- und Attacken-Kontext aus der Task-Konfiguration."""
     return (
-        "Aktuell dokumentierte Pokemon und Attacken aus POKEMONS.md:\n"
-        f"{content}\n\n"
+        f"{format_task_pokemon_context(task_pokemon)}\n\n"
         "Wenn du attack_pokemon nutzt, waehle den Slot der gewuenschten Attacke:\n"
-        "1 = oben links, 2 = oben rechts, 3 = unten links, 4 = unten rechts."
+        "1 = oben links, 2 = oben rechts, 3 = unten links, 4 = unten rechts.\n"
+        "Wenn du switch_pokemon nutzt, waehle den Pokemon-Slot 1 bis 6."
     )
 
 
@@ -244,7 +275,8 @@ def get_clean_conversation_log(messages, selfhosted=True):
 
 async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                     debug: bool = False, selfhosted: bool = True, api_key: str = None,
-                    task_name: str = "Unbekannt", screenshots_dir: str = None) -> dict:
+                    task_name: str = "Unbekannt", screenshots_dir: str = None,
+                    task_pokemon: list = None) -> dict:
     """
     Startet einen Agenten-Durchlauf für eine spezifische Aufgabe.
 
@@ -299,7 +331,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
 
     def refresh_pokemon_context():
         nonlocal pokemon_context_message_index
-        pokemon_context_message = {"role": "system", "content": read_pokemon_context()}
+        pokemon_context_message = {"role": "system", "content": build_pokemon_context(task_pokemon)}
         if pokemon_context_message_index is None:
             messages.append(pokemon_context_message)
             pokemon_context_message_index = len(messages) - 1

@@ -100,6 +100,7 @@ async def main(debug=False, selfhosted=True, api_key=None):
                 slot = task["savestate_slot"]
                 max_steps = task["max_steps"]
                 prompt = task["system_prompt"]
+                task_pokemon = task.get("pokemon_team", task.get("pokemon", task.get("pokemons", [])))
                 
                 print(f"\n\n{'='*60}")
                 print(f">>> STARTE BENCHMARK: Modell '{model}' | Task '{task['name']}' <<<")
@@ -125,7 +126,8 @@ async def main(debug=False, selfhosted=True, api_key=None):
                 result = await run_agent(model_name=model, system_prompt=prompt, max_steps=max_steps,
                                         debug=debug, selfhosted=selfhosted, api_key=api_key,
                                         task_name=task.get("name", task_id),
-                                        screenshots_dir=screenshots_dir)
+                                        screenshots_dir=screenshots_dir,
+                                        task_pokemon=task_pokemon)
                 
                 # Speichere die Ergebnisse
                 log_file = os.path.join(task_dir, "conversation_log.json")
@@ -142,6 +144,7 @@ async def main(debug=False, selfhosted=True, api_key=None):
                     "reason": result["reason"],
                     "tokens": result.get("tokens", {"input": 0, "cached": 0, "output": 0, "total": 0}),
                     "screenshots": result.get("screenshots", []),
+                    "pokemon_team": task_pokemon,
                     "files": {
                         "conversation_log": log_file,
                         "model_interactions": interactions_file,

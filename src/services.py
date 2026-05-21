@@ -104,62 +104,6 @@ def task_completed(reason: str) -> str:
     return f"BENCHMARK_SIGNAL: TASK_COMPLETED. Grund: {reason}"
 
 @mcp.tool()
-def get_pokemon_log() -> str:
-    """
-    Liest den aktuellen Inhalt der POKEMONS.md Datei.
-    Nutze dies, um zu sehen, welche Pokémon aktuell im Team oder in der Box dokumentiert sind.
-    """
-    try:
-        pokemon_file = os.path.join(PROJECT_ROOT, "POKEMONS.md")
-        with open(pokemon_file, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return "Fehler: Die Datei POKEMONS.md existiert noch nicht."
-    except Exception as e:
-        return f"Fehler beim Lesen der POKEMONS.md: {e}"
-
-@mcp.tool()
-def update_pokemon_log(content: str) -> str:
-    """
-    Überschreibt den Inhalt der POKEMONS.md Datei mit dem übergebenen Text.
-    Nutze dies, um dein Team zu aktualisieren (Level-Ups, neue Attacken, Entwicklungen) 
-    oder neue Pokémon in die Datei aufzunehmen.
-    Lies am besten zuerst den aktuellen Zustand mit get_pokemon_log(), ändere den Text 
-    und schreibe ihn mit dieser Funktion zurück.
-    """
-    try:
-        pokemon_file = os.path.join(PROJECT_ROOT, "POKEMONS.md")
-        with open(pokemon_file, "w", encoding="utf-8") as f:
-            f.write(content)
-        logging.info("Tool Aufruf: update_pokemon_log. POKEMONS.md wurde überschrieben.")
-        return "Erfolg: POKEMONS.md wurde erfolgreich aktualisiert."
-    except Exception as e:
-        logging.error(f"Fehler beim Überschreiben von POKEMONS.md: {e}")
-        return f"Fehler beim Aktualisieren der POKEMONS.md: {e}"
-
-@mcp.tool()
-def add_pokemon(name: str, level: int, location: str, moves: str = "Unbekannt") -> str:
-    """
-    Hängt ein neues Pokémon an die POKEMONS.md Datei an.
-    Parameter:
-    - name: Name des Pokémon (z.B. 'Flemmli')
-    - level: Aktuelles Level als Zahl (z.B. 5)
-    - location: Wo es erhalten/gefangen wurde (z.B. 'Route 101')
-    - moves: Bekannte Attacken als kommagetrennter String (z.B. 'Kratzer, Heuler')
-    """
-    entry = f"\n- **{name}** (Lv. {level}) | Ort: {location} | Attacken: {moves}"
-    try:
-        pokemon_file = os.path.join(PROJECT_ROOT, "POKEMONS.md")
-        with open(pokemon_file, "a", encoding="utf-8") as f:
-            f.write(entry)
-        logging.info(f"Tool Aufruf: add_pokemon. {name} zu POKEMONS.md hinzugefügt.")
-        return f"Erfolg: {name} wurde der POKEMONS.md hinzugefügt."
-    except Exception as e:
-        logging.error(f"Fehler beim Anhängen an POKEMONS.md: {e}")
-        return f"Fehler beim Anhängen an POKEMONS.md: {e}"
-
-
-@mcp.tool()
 def attack_pokemon(slot: int) -> str:
     """
     Fuehrt eine Attacke im Pokemon-Kampf aus.
@@ -168,7 +112,7 @@ def attack_pokemon(slot: int) -> str:
     also wenn rechts unten die vier Optionen 'KAMPF', 'BEUTEL', 'POKEMON', 'FLUCHT' sichtbar sind!
     Wenn du dir unsicher bist, nutze zuerst get_state() um den Bildschirm zu pruefen.
 
-    Der Agenten-Kontext enthaelt die aktuell dokumentierten Pokemon und Attacken aus POKEMONS.md.
+    Der Agenten-Kontext enthaelt die Pokemon und Attacken aus der Task-Konfiguration.
     Waehle daraus die sinnvollste Attacke und uebergib nur den passenden Slot.
     Die Funktion drueckt automatisch 'KAMPF', navigiert zum gewaehlten Attacken-Slot und bestaetigt.
 
@@ -208,6 +152,46 @@ def attack_pokemon(slot: int) -> str:
 
     logging.info(f"Attacke in Slot {slot} ausgefuehrt.")
     return f"Erfolg: Attacke in Slot {slot} wurde ausgefuehrt."
+
+
+@mcp.tool()
+def switch_pokemon(slot: int) -> str:
+    """
+    Wechselt im Pokemon-Kampf auf ein anderes Pokemon aus dem Team.
+
+    WICHTIG: Rufe diese Funktion NUR auf, wenn du dich im Kampf-Hauptmenue befindest,
+    also wenn rechts unten die vier Optionen 'KAMPF', 'BEUTEL', 'POKEMON', 'FLUCHT' sichtbar sind!
+    Wenn du dir unsicher bist, nutze zuerst get_state() um den Bildschirm zu pruefen.
+
+    Der Agenten-Kontext enthaelt die aktuell dokumentierten Pokemon-Slots aus der Task-Konfiguration.
+    Waehle daraus das sinnvollste Pokemon und uebergib nur dessen Slot.
+
+    Parameter:
+    - slot: Position des Pokemon im Team (1 bis 6).
+    """
+    if not isinstance(slot, int) or not (1 <= slot <= 6):
+        return f"Fehler: Slot muss 1, 2, 3, 4, 5 oder 6 sein. Erhalten: {slot}"
+
+    logging.info(f"Tool Aufruf: switch_pokemon(slot={slot})")
+
+    emulator_controller.send_keyboard_input(TARGET, "down", is_pid=USE_PID, duration=0.1)
+    time.sleep(0.1)
+    emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.15)
+    time.sleep(0.5)
+
+    emulator_controller.send_keyboard_input(TARGET, "up", is_pid=USE_PID, duration=0.1)
+    time.sleep(0.1)
+
+    for _ in range(slot - 1):
+        emulator_controller.send_keyboard_input(TARGET, "down", is_pid=USE_PID, duration=0.1)
+        time.sleep(0.1)
+
+    emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.15)
+    time.sleep(0.3)
+    emulator_controller.send_keyboard_input(TARGET, BUTTON_MAPPING["a"], is_pid=USE_PID, duration=0.15)
+
+    logging.info(f"Pokemon in Slot {slot} wurde zum Wechsel ausgewaehlt.")
+    return f"Erfolg: Pokemon in Slot {slot} wurde zum Wechsel ausgewaehlt."
 
 if __name__ == "__main__":
     # Startet den MCP Server. Er lauscht nun auf stdin/stdout.
