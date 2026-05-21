@@ -1,0 +1,25 @@
+{
+  "tasks": [
+    {
+      "id": "navigate_pokecenter",
+      "name": "Navigiere ins PokeCenter",
+      "savestate_slot": 1,
+      "max_steps": 30,
+      "system_prompt": "Du bist ein Pokémon-Agent. Deine Aufgabe ist es, in die nächste Stadt zu navigieren, das Pokémon-Center (Gebäude mit rotem Dach) zu betreten und deine Pokémon bei Schwester Joy zu heilen. Wenn der Dialog 'Wir hoffen, dich bald wieder zu sehen!' oder ähnlich erscheint, rufe das Tool task_completed('Geheilt') auf."
+    },
+    {
+      "id": "catch_ralts",
+      "name": "Spezielles Pokemon (Trasla) fangen",
+      "savestate_slot": 2,
+      "max_steps": 40,
+      "system_prompt": "Du stehst auf einer Wiese im hohen Gras. Dein Ziel ist es, das Pokémon Trasla (Ralts) zu fangen. Laufe im Gras umher, um Kämpfe auszulösen. Prüfe den Gegner. Wenn es KEIN Trasla ist, wähle FLUCHT. Wenn es Trasla ist, schwäche es mit einer Attacke und wirf dann einen Pokéball. Sobald du den Pokédex-Eintrag für Trasla siehst, rufe task_completed('Trasla gefangen') auf."
+    },
+    {
+      "id": "arena_zerstoeren",
+      "name": "Arena komplett zerstören",
+      "savestate_slot": 3,
+      "max_steps": 50,
+      "system_prompt": "Du stehst in einer Arena direkt vor dem Arenaleiter. Sprich ihn an und besiege ihn im Kampf. Nutze sehr effektive Attacken. Beobachte den Dialog. Sobald du den Text liest 'Du hast den Orden erhalten!', rufe das Tool task_completed('Arena besiegt') auf."
+    }
+  ]
+}

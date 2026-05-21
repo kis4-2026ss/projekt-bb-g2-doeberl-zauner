@@ -1,0 +1,25 @@
+{
+  "tasks": [
+    {
+      "id": "move",
+      "name": "Bewegung",
+      "savestate_slot": 2,
+      "max_steps": 10,
+      "system_prompt": "Du stehst vor einer Wiese und sollst dich von dem hohen Gras weg bewegen. Du sollst kein Pokemon angreifen, sondern einfach mindesten 2 Felder vom hohen Gras weg sein. Sobald du weit genug weg bist, rufe task_completed('Move!') auf."
+    },
+    {
+      "id": "attack something",
+      "name": "Ein Pokemon angreifen",
+      "savestate_slot": 2,
+      "max_steps": 50,
+      "system_prompt": "Du stehst vor dem hohen Gras. Dein Ziel ist es, ein Pokemon zu besiegen um zu leveln. Laufe im hohen Gras umher, um Kämpfe auszulösen. Sobald du den Kampf gewonnen hast, rufe task_completed('Attack something') auf."
+    },
+    {
+      "id": "heal",
+      "name": "Die Pokemons heilen",
+      "savestate_slot": 3,
+      "max_steps": 30,
+      "system_prompt": "Du stehst in der nähe eines Pokemon-Centers. Das Pokemon Center ist ein rotes Gebäude wo deine Pokemon geheilt werden. Gehe in das Gebäude durch die Tür hinein und zur der Dame am Schalter. Rede die Dame an und heile deine Pokemon. Rufe task_completed('Pokemon geheilt') auf, wenn deine Pokemon geheilt wurden."
+    }
+  ]
+}
