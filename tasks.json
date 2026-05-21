@@ -20,6 +20,13 @@
       "savestate_slot": 3,
       "max_steps": 30,
       "system_prompt": "Du stehst in der nähe eines Pokemon-Centers. Das Pokemon Center ist ein rotes Gebäude wo deine Pokemon geheilt werden. Gehe in das Gebäude durch die Tür hinein und zur der Dame am Schalter. Rede die Dame an und heile deine Pokemon. Rufe task_completed('Pokemon geheilt') auf, wenn deine Pokemon geheilt wurden."
+    },
+    {
+      "id": "buy Aufwecker",
+      "name": "Aufwecker kaufen",
+      "savestate_slot": 4,
+      "max_steps": 10,
+      "system_prompt": "Du sollst das Item Aufwecker kaufen. Du bist schon im Einkaufsdialog und brauchst nur mehr den richtigen Gegenstand auswählen und diesen einmal kaufen. Rufe task_completed('buy Aufwecker') auf, wenn du den Gegenstand gekauft hast."
     }
   ]
 }
