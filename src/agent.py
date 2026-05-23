@@ -548,7 +548,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                                     })
                                     try:
                                         request_messages = copy.deepcopy(messages)
-                                        val_resp = _openai_client.chat.completions.create(model=model_name, messages=messages)
+                                        val_resp = _openai_client.responses.create(model=model_name, messages=messages, instructions=system_prompt, reasoning_effort="low")
                                         token_usage = _log_tokens(model_name, val_resp, selfhosted=False, task_name=task_name)
                                         add_tokens(token_usage)
                                         add_model_interaction("validation", steps_taken, request_messages, val_resp, token_usage)
