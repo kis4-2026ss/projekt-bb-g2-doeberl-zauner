@@ -382,7 +382,6 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 # ── API-Aufruf ──
                 try:
                     request_messages = copy.deepcopy(messages)
-                    time.sleep(2) # Sonst ist der Agent teilweise zu schnell. Also Gegner greift noch an oder Aktion ist noch nicht fertig
                     if selfhosted:
                         response = ollama.chat(model=model_name, messages=messages, tools=api_tools)
                         token_usage = _log_tokens(model_name, response, selfhosted=True, task_name=task_name)
@@ -473,123 +472,123 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                                 tool_text_result.append("Screenshot erfolgreich erstellt.")
                         result_str = "\n".join(tool_text_result)
 
-                        # Benchmark-Signal prüfen → Validierung mit Screenshot
-                        if "BENCHMARK_SIGNAL: TASK_COMPLETED" in result_str:
-                            # Dieser Schritt zählt NICHT → zurücksetzen
-                            steps_taken -= 1
-                            print(f"\n🔍 Task-Completed aufgerufen. Starte Validierung mit Screenshot...")
-
-                            if selfhosted:
-                                messages.append({"role": "tool", "name": func_name, "content": result_str})
-                            else:
-                                messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_str})
-
-                            # 1. Screenshot machen über MCP
-                            val_image_b64 = None
-                            try:
-                                validation_screenshot = await session.call_tool("get_state", {})
-                                for part in validation_screenshot.content:
-                                    if part.type == "image":
-                                        val_image_b64 = part.data
-                            except Exception as ve:
-                                print(f"⚠️ Validierungs-Screenshot fehlgeschlagen: {ve}")
-
-                            if val_image_b64:
-                                val_ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                                val_filename = save_screenshot(val_image_b64, "validation", steps_taken)
-                                val_label = val_filename or f"mcp_current_state_{val_ts}"
-
-                                # 2. Screenshot dem Modell zur Validierung senden
-                                val_prompt = (
-                                    f"Du hast behauptet, die Aufgabe abgeschlossen zu haben. Grund: {result_str}\n\n"
-                                    "Hier ist ein aktueller Screenshot des Spiels. Prüfe GENAU ob die Aufgabe "
-                                    "wirklich erfolgreich erledigt wurde.\n\n"
-                                    "Antworte NUR mit einem einzelnen Wort:\n"
-                                    "- 'JA' wenn die Aufgabe auf dem Screenshot eindeutig als erledigt erkennbar ist.\n"
-                                    "- 'NEIN' wenn die Aufgabe NICHT erledigt ist oder du dir unsicher bist."
-                                )
-
-                                if selfhosted:
-                                    messages.append({
-                                        "role": "user",
-                                        "content": val_prompt,
-                                        "images": [val_image_b64],
-                                        "image_timestamps": [val_label]
-                                    })
-                                    try:
-                                        request_messages = copy.deepcopy(messages)
-                                        val_response = ollama.chat(model=model_name, messages=messages)
-                                        token_usage = _log_tokens(model_name, val_response, selfhosted=True, task_name=task_name)
-                                        add_tokens(token_usage)
-                                        add_model_interaction("validation", steps_taken, request_messages, val_response, token_usage)
-                                        val_msg = val_response['message']
-                                        if isinstance(val_msg, dict):
-                                            val_answer = val_msg.get('content', '').strip().upper()
-                                            val_msg_copy = val_msg
-                                        else:
-                                            val_answer = getattr(val_msg, 'content', '').strip().upper()
-                                            val_msg_copy = {
-                                                "role": getattr(val_msg, "role", "assistant"),
-                                                "content": getattr(val_msg, "content", "")
-                                            }
-                                        messages.append(val_msg_copy)
-                                    except Exception as e:
-                                        print(f"⚠️ Validierungs-API-Fehler: {e}")
-                                        val_answer = "NEIN"
-                                        messages.append({"role": "assistant", "content": "NEIN (Fehler bei API)"})
-                                else:
-                                    messages.append({
-                                        "role": "user",
-                                        "content": [
-                                            {"type": "text", "text": val_prompt},
-                                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
-                                        ],
-                                        "image_timestamps": [val_label]
-                                    })
-                                    try:
-                                        request_messages = copy.deepcopy(messages)
-                                        val_resp = _openai_client.responses.create(model=model_name, messages=messages, instructions=system_prompt, reasoning_effort="low")
-                                        token_usage = _log_tokens(model_name, val_resp, selfhosted=False, task_name=task_name)
-                                        add_tokens(token_usage)
-                                        add_model_interaction("validation", steps_taken, request_messages, val_resp, token_usage)
-                                        val_choice = val_resp.choices[0].message
-                                        val_answer = val_choice.content.strip().upper()
-                                        messages.append({"role": "assistant", "content": val_choice.content or ""})
-                                    except Exception as e:
-                                        print(f"⚠️ Validierungs-API-Fehler: {e}")
-                                        val_answer = "NEIN"
-                                        messages.append({"role": "assistant", "content": "NEIN (Fehler bei API)"})
-
-                                print(f"🔍 Validierungs-Ergebnis: {val_answer}")
-
-                                if val_answer.startswith("JA"):
-                                    success, finish_reason = True, result_str
-                                    print(f"\n🎉 AUFGABE VALIDIERT UND ERFOLGREICH BEENDET!")
-                                    return create_result(success, steps_taken, finish_reason, messages, selfhosted,
-                                                         total_tokens_used, saved_screenshots, model_interactions)
-                                else:
-                                    print("❌ Validierung fehlgeschlagen! Aufgabe ist NICHT erledigt. Agent macht weiter.")
-                                    messages.append({
-                                        "role": "user",
-                                        "content": "Die Validierung hat ergeben, dass die Aufgabe NICHT abgeschlossen ist. "
-                                                   "Bitte analysiere den aktuellen Screenshot erneut und mache weiter!",
-                                        "images": [val_image_b64],
-                                        "image_timestamps": [val_label]
-                                    } if selfhosted else {
-                                        "role": "user",
-                                        "content": [
-                                            {"type": "text", "text": "Die Validierung hat ergeben, dass die Aufgabe NICHT abgeschlossen ist. "
-                                                                     "Bitte analysiere den aktuellen Screenshot erneut und mache weiter!"},
-                                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
-                                        ],
-                                        "image_timestamps": [val_label]
-                                    })
-                                    continue  # Nächster Schleifendurchlauf (ohne Step-Verbrauch)
-                            else:
-                                # Kein Screenshot möglich → sicherheitshalber weitermachen
-                                print("⚠️ Kein Validierungs-Screenshot möglich. Agent macht weiter.")
-                                messages.append({"role": "user", "content": "Validierung konnte nicht durchgeführt werden. Mache weiter mit der Aufgabe."})
-                                continue
+                        # Benchmark-Signal prüfen --> Validierung mit Screenshot
+#                        if "BENCHMARK_SIGNAL: TASK_COMPLETED" in result_str:
+#                            # Dieser Schritt zählt NICHT --> zurücksetzen
+#                            steps_taken -= 1
+#                            print(f"\n🔍 Task-Completed aufgerufen. Starte Validierung mit Screenshot...")
+#
+#                            if selfhosted:
+#                                messages.append({"role": "tool", "name": func_name, "content": result_str})
+#                            else:
+#                                messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_str})
+#
+#                            # 1. Screenshot machen über MCP
+#                            val_image_b64 = None
+#                            try:
+#                                validation_screenshot = await session.call_tool("get_state", {})
+#                                for part in validation_screenshot.content:
+#                                    if part.type == "image":
+#                                        val_image_b64 = part.data
+#                            except Exception as ve:
+#                                print(f"⚠️ Validierungs-Screenshot fehlgeschlagen: {ve}")
+#
+#                            if val_image_b64:
+#                                val_ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+#                                val_filename = save_screenshot(val_image_b64, "validation", steps_taken)
+#                                val_label = val_filename or f"mcp_current_state_{val_ts}"
+#
+#                                # 2. Screenshot dem Modell zur Validierung senden
+#                                val_prompt = (
+#                                    f"Du hast behauptet, die Aufgabe abgeschlossen zu haben. Grund: {result_str}\n\n"
+#                                    "Hier ist ein aktueller Screenshot des Spiels. Prüfe GENAU ob die Aufgabe "
+#                                    "wirklich erfolgreich erledigt wurde.\n\n"
+#                                    "Antworte NUR mit einem einzelnen Wort:\n"
+#                                    "- 'JA' wenn die Aufgabe auf dem Screenshot eindeutig als erledigt erkennbar ist.\n"
+#                                    "- 'NEIN' wenn die Aufgabe NICHT erledigt ist oder du dir unsicher bist."
+#                                )
+#
+#                                if selfhosted:
+#                                    messages.append({
+#                                        "role": "user",
+#                                        "content": val_prompt,
+#                                        "images": [val_image_b64],
+#                                        "image_timestamps": [val_label]
+#                                    })
+#                                    try:
+#                                        request_messages = copy.deepcopy(messages)
+#                                        val_response = ollama.chat(model=model_name, messages=messages)
+#                                        token_usage = _log_tokens(model_name, val_response, selfhosted=True, task_name=task_name)
+#                                        add_tokens(token_usage)
+#                                        add_model_interaction("validation", steps_taken, request_messages, val_response, token_usage)
+#                                        val_msg = val_response['message']
+#                                        if isinstance(val_msg, dict):
+#                                            val_answer = val_msg.get('content', '').strip().upper()
+#                                            val_msg_copy = val_msg
+#                                        else:
+#                                            val_answer = getattr(val_msg, 'content', '').strip().upper()
+#                                            val_msg_copy = {
+#                                                "role": getattr(val_msg, "role", "assistant"),
+#                                                "content": getattr(val_msg, "content", "")
+#                                            }
+#                                        messages.append(val_msg_copy)
+#                                    except Exception as e:
+#                                        print(f"⚠️ Validierungs-API-Fehler: {e}")
+#                                        val_answer = "NEIN"
+#                                        messages.append({"role": "assistant", "content": "NEIN (Fehler bei API)"})
+#                                else:
+#                                    messages.append({
+#                                        "role": "user",
+#                                        "content": [
+#                                            {"type": "text", "text": val_prompt},
+#                                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
+#                                        ],
+#                                        "image_timestamps": [val_label]
+#                                    })
+#                                    try:
+#                                        request_messages = copy.deepcopy(messages)
+#                                        val_resp = _openai_client.responses.create(model=model_name, messages=messages, instructions=system_prompt, reasoning_effort="low")
+#                                        token_usage = _log_tokens(model_name, val_resp, selfhosted=False, task_name=task_name)
+#                                        add_tokens(token_usage)
+#                                        add_model_interaction("validation", steps_taken, request_messages, val_resp, token_usage)
+#                                        val_choice = val_resp.choices[0].message
+#                                        val_answer = val_choice.content.strip().upper()
+#                                        messages.append({"role": "assistant", "content": val_choice.content or ""})
+#                                    except Exception as e:
+#                                        print(f"⚠️ Validierungs-API-Fehler: {e}")
+#                                        val_answer = "NEIN"
+#                                        messages.append({"role": "assistant", "content": "NEIN (Fehler bei API)"})
+#
+#                                print(f"🔍 Validierungs-Ergebnis: {val_answer}")
+#
+#                                if val_answer.startswith("JA"):
+#                                    success, finish_reason = True, result_str
+#                                    print(f"\n🎉 AUFGABE VALIDIERT UND ERFOLGREICH BEENDET!")
+#                                    return create_result(success, steps_taken, finish_reason, messages, selfhosted,
+#                                                         total_tokens_used, saved_screenshots, model_interactions)
+#                                else:
+#                                    print("❌ Validierung fehlgeschlagen! Aufgabe ist NICHT erledigt. Agent macht weiter.")
+#                                    messages.append({
+#                                        "role": "user",
+#                                        "content": "Die Validierung hat ergeben, dass die Aufgabe NICHT abgeschlossen ist. "
+#                                                   "Bitte analysiere den aktuellen Screenshot erneut und mache weiter!",
+#                                        "images": [val_image_b64],
+#                                        "image_timestamps": [val_label]
+#                                    } if selfhosted else {
+#                                        "role": "user",
+#                                        "content": [
+#                                            {"type": "text", "text": "Die Validierung hat ergeben, dass die Aufgabe NICHT abgeschlossen ist. "
+#                                                                     "Bitte analysiere den aktuellen Screenshot erneut und mache weiter!"},
+#                                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
+#                                        ],
+#                                        "image_timestamps": [val_label]
+#                                    })
+#                                    continue  # Nächster Schleifendurchlauf (ohne Step-Verbrauch)
+#                            else:
+#                                # Kein Screenshot möglich → sicherheitshalber weitermachen
+#                                print("⚠️ Kein Validierungs-Screenshot möglich. Agent macht weiter.")
+#                                messages.append({"role": "user", "content": "Validierung konnte nicht durchgeführt werden. Mache weiter mit der Aufgabe."})
+#                                continue
 
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                         ts_label = f"mcp_current_state_{timestamp}"
@@ -628,7 +627,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                         else:
                             messages.append({"role": "tool", "tool_call_id": tc_id, "content": err_str})
 
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
 
             # Max Steps erreicht
             print("\n⏰ Maximale Anzahl an Schritten erreicht. Starte automatische Endvalidierung des letzten Zustands...")

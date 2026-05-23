@@ -48,7 +48,7 @@ MODELS_OPENAI = [ # Geld In, Cached, out
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 RESULTS_BASE_DIR = os.path.join(PROJECT_ROOT, "results")
 
-async def main(debug=False, selfhosted=True, api_key=None):
+async def main(debug=False, selfhosted=True, api_key=None, test=None):
     # Erstelle einen Unterordner mit Zeitstempel für jeden Benchmark-Durchlauf
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_dir = os.path.join(RESULTS_BASE_DIR, timestamp)
@@ -89,6 +89,14 @@ async def main(debug=False, selfhosted=True, api_key=None):
     except Exception as e:
         print(f"⚠️ Warnung: Strg+X Hotkey konnte nicht registriert werden: {e}")
 
+    # Abbruch vor dem ersten Durchlauf wenn test aktviert wurde
+    if test: 
+        print("=" * 60)
+        print("=" * 60)
+        print("Nur eine TEST. Benchmark wird beendet")
+        print("=" * 60)
+        print("=" * 60)
+        return
     try:
         for model in models:
             if cancel_requested:
@@ -200,6 +208,7 @@ async def main(debug=False, selfhosted=True, api_key=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pokemon KI-Benchmark")
+    parser.add_argument("--test", action="store_true", help="Setze den Benchmark in den Testmodus. So bricht er vor dem Agenten ab. Kein Tokenverbrauch.")
     parser.add_argument("--debug", action="store_true", help="Aktiviere Debug-Ausgaben (Rohdaten vom Modell)")
     parser.add_argument("--selfhosted", default="true",
                         help="'true' = Ollama lokal, 'false' = OpenAI API (default: true)")
@@ -208,10 +217,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     selfhosted = args.selfhosted.lower() == "true"
+    test =       args.test
 
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     try:
-        asyncio.run(main(debug=args.debug, selfhosted=selfhosted, api_key=args.api_key))
+        asyncio.run(main(debug=args.debug, selfhosted=selfhosted, api_key=args.api_key, test=test))
     except KeyboardInterrupt:
         pass # Verhindert unschöne Tracebacks beim Beenden
