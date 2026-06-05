@@ -25,9 +25,9 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SERVICES_SCRIPT = os.path.join(os.path.dirname(__file__), "services.py")
 TOKENS_FILE = os.path.join(PROJECT_ROOT, "TOKENS.txt")
 OPENAI_REASONING = {"effort": "low"}
-OPENAI_REASONING = {"effort": "medium"}
-OPENAI_REASONING = {"effort": "high"}
-OPENAI_REASONING = {"effort": "xhigh"}
+# OPENAI_REASONING = {"effort": "medium"}
+# OPENAI_REASONING = {"effort": "high"}
+# OPENAI_REASONING = {"effort": "xhigh"}
 
 # none	Latency-critical tasks that do not benefit from any reasoning or multi-chained tool calls. For latency-sensitive use cases with gpt-5.5, we recommend trying low to begin with and then moving to none if required.
 #   Common use cases include voice, fast information retrieval, and classification.
@@ -437,9 +437,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
     total_tokens_used = {"input": 0, "cached": 0, "output": 0, "total": 0}
     saved_screenshots = []
     model_interactions = []
-    log_file = os.path.join(log_dir, "conversation_log.json") if log_dir else None
-    interactions_file = os.path.join(log_dir, "model_interactions.json") if log_dir else None
-    interactions_stream_file = os.path.join(log_dir, "model_interactions.jsonl") if log_dir else None
+    
     model_io_log_file = os.path.join(log_dir, "model_io_log.txt") if log_dir else None
     tokens_file = os.path.join(log_dir, "tokens.json") if log_dir else None
 
@@ -541,8 +539,6 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
         if not log_dir:
             return
         os.makedirs(log_dir, exist_ok=True)
-        write_json_file(log_file, get_clean_conversation_log(messages, selfhosted))
-        write_json_file(interactions_file, model_interactions)
         write_json_file(tokens_file, total_tokens_used)
 
     def add_tokens(t_dict):
@@ -576,10 +572,6 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
             "tokens": token_usage
         }
         model_interactions.append(interaction)
-        if interactions_stream_file:
-            os.makedirs(log_dir, exist_ok=True)
-            with open(interactions_stream_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(convert_to_serializable(interaction), ensure_ascii=False, default=str) + "\n")
         append_model_io_text_log(interaction, request_messages, response_payload)
         persist_runtime_logs()
 
