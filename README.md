@@ -1,4 +1,4 @@
-# Autonomous Pokémon Agent Framework
+# Autonomous Pokémon Agent Benchmark
 
 Dieses Projekt ist im Rahmen des KIS-Semesters (Künstliche Intelligente Systeme) entstanden. Es bietet ein Framework, um autonome KI-Agenten (Large Language Models) Pokémon spielen zu lassen. 
 
