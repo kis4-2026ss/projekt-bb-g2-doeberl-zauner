@@ -1,7 +1,7 @@
 # Projekt-Proposal: Autonomous Pokémon Agent Framework
 
-**Lehrveranstaltung:** Künstliche Intelligente Systeme (KIS)
-**Thema:** AI-assisted Software Engineering
+**Lehrveranstaltung:** KI-Methoden im Software Engineering
+**Thema:** Autonomous Pokémon Agent Benchmark
 **Team (Gruppe G2):** Felix Döberl, Philipp Zauner
 **Datum:** Juni 2026
 
