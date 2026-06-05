@@ -74,7 +74,7 @@ def get_state() -> Image:
     try:
         with open(screenshot_path, "rb") as f:
             image_data = f.read()
-        logging.info("Screenshot erfolgreich gelesen und wird als Image zurückgegeben.")
+        logging.info("Screenshot erfolgreich gelesen und wird als Image zurueckgegeben.")
         return Image(data=image_data, format="png")
     except Exception as e:
         logging.error(f"Fehler beim Lesen des Bildes: {e}")

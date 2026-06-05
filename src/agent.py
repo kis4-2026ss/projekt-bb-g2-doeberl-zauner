@@ -24,6 +24,25 @@ except ImportError:
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SERVICES_SCRIPT = os.path.join(os.path.dirname(__file__), "services.py")
 TOKENS_FILE = os.path.join(PROJECT_ROOT, "TOKENS.txt")
+OPENAI_REASONING = {"effort": "low"}
+OPENAI_REASONING = {"effort": "medium"}
+OPENAI_REASONING = {"effort": "high"}
+OPENAI_REASONING = {"effort": "xhigh"}
+
+# none	Latency-critical tasks that do not benefit from any reasoning or multi-chained tool calls. For latency-sensitive use cases with gpt-5.5, we recommend trying low to begin with and then moving to none if required.
+#   Common use cases include voice, fast information retrieval, and classification.
+
+# low	Efficient reasoning with a modest latency increase. Ideal for use cases requiring tool-use, planning, search, or multi-step decision making, while optimizing for speed and cost.
+#   Common use cases include data analysis, drafting, execution-oriented coding, and customer support / chat assistant workflows.
+
+# medium	When quality and reliability matter, and the task involves planning, complex reasoning, and judgement. Default configuration for most workloads, and a well-balanced point on the pareto curve of latency, performance and cost.
+#   Common use cases include agentic coding, research, working with spreadsheets & slides, and delegating long-horizon work.
+
+# high	Hard reasoning, complex debugging, deep planning, and high-value tasks where quality and intelligence matters more than latency. Recommended for complex workflows and agentic tasks.
+#   Common use cases include agentic coding, long-horizon research, and knowledge work. Depending on the complexity of the task, evaluate both medium and high.
+
+# xhigh	Deep research, asynchronous workflows and agentic tasks that require very long rollouts. Only use when your evals show a clear benefit that justifies the extra latency and cost.
+#   Common use cases include security and code review, enterprise productivity, deeper research tasks, and challenging coding workflows.
 
 # Globaler OpenAI Client (wird bei Bedarf initialisiert)
 _openai_client = None
@@ -61,13 +80,26 @@ def _log_tokens(model_name, response, selfhosted, task_name="Unbekannt"):
             output_tokens = response.get('eval_count', 0) or 0
             cached_tokens = 0  # Ollama hat kein Caching-Konzept
         else:
-            # OpenAI: usage Objekt mit prompt_tokens, completion_tokens, etc.
+            # OpenAI Responses API: usage Objekt mit input_tokens, output_tokens, etc.
             usage = response.usage
-            input_tokens = getattr(usage, 'prompt_tokens', 0) or 0
-            output_tokens = getattr(usage, 'completion_tokens', 0) or 0
-            # Cached tokens stecken in prompt_tokens_details
-            details = getattr(usage, 'prompt_tokens_details', None)
-            cached_tokens = getattr(details, 'cached_tokens', 0) or 0 if details else 0
+            if isinstance(usage, dict):
+                input_tokens = usage.get('input_tokens')
+                output_tokens = usage.get('output_tokens')
+                details = usage.get('input_tokens_details') or usage.get('prompt_tokens_details')
+            else:
+                input_tokens = getattr(usage, 'input_tokens', None)
+                output_tokens = getattr(usage, 'output_tokens', None)
+                details = getattr(usage, 'input_tokens_details', None)
+                if details is None:
+                    details = getattr(usage, 'prompt_tokens_details', None)
+            if input_tokens is None:
+                input_tokens = (usage.get('prompt_tokens', 0) if isinstance(usage, dict) else getattr(usage, 'prompt_tokens', 0)) or 0
+            if output_tokens is None:
+                output_tokens = (usage.get('completion_tokens', 0) if isinstance(usage, dict) else getattr(usage, 'completion_tokens', 0)) or 0
+            if details:
+                cached_tokens = (details.get('cached_tokens', 0) if isinstance(details, dict) else getattr(details, 'cached_tokens', 0)) or 0
+            else:
+                cached_tokens = 0
 
         total_tokens = input_tokens + output_tokens
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -186,6 +218,119 @@ def build_pokemon_context(task_pokemon=None):
     )
 
 
+def build_openai_instructions(system_prompt, task_pokemon=None):
+    """Erstellt die Instructions fuer die OpenAI Responses API."""
+    return f"{system_prompt}\n\n{build_pokemon_context(task_pokemon)}"
+
+
+def convert_tools_to_responses_tools(api_tools):
+    """Wandelt Chat-Completions-Tools in Responses-API-Tools um."""
+    responses_tools = []
+    for tool in api_tools:
+        function_data = tool.get("function", {})
+        responses_tools.append({
+            "type": "function",
+            "name": function_data.get("name"),
+            "description": function_data.get("description", ""),
+            "parameters": function_data.get("parameters", {"type": "object", "properties": {}})
+        })
+    return responses_tools
+
+
+def create_openai_user_input(content, image_b64=None):
+    """Erstellt eine User-Message fuer die OpenAI Responses API."""
+    if image_b64:
+        return {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": content},
+                {"type": "input_image", "image_url": f"data:image/png;base64,{image_b64}"}
+            ]
+        }
+    return {"role": "user", "content": content}
+
+
+def sanitize_response_output_item(item):
+    """Entfernt Response-Only-Felder, bevor ein Output-Item wieder als Input gesendet wird."""
+    item_type = item.get("type")
+    if item_type == "function_call":
+        sanitized = {
+            "type": "function_call",
+            "call_id": item.get("call_id"),
+            "name": item.get("name"),
+            "arguments": item.get("arguments") or "{}"
+        }
+        if item.get("id"):
+            sanitized["id"] = item.get("id")
+        return sanitized
+
+    if item_type == "message":
+        return {
+            "type": "message",
+            "role": item.get("role", "assistant"),
+            "content": item.get("content", [])
+        }
+
+    if item_type == "reasoning":
+        sanitized = {"type": "reasoning"}
+        for key in ("id", "summary", "encrypted_content"):
+            if key in item and item.get(key) is not None:
+                sanitized[key] = item.get(key)
+        return sanitized
+
+    return {"type": item_type} if item_type else {}
+
+
+def get_response_output_items(response):
+    """Gibt die Output-Items einer Responses-API-Antwort serialisierbar zurueck."""
+    output_items = getattr(response, "output", None) or []
+    return convert_to_serializable(output_items)
+
+
+def get_response_input_items(response):
+    """Gibt Responses-Output-Items in API-kompatibler Input-Form zurueck."""
+    input_items = []
+    for item in get_response_output_items(response):
+        sanitized_item = sanitize_response_output_item(item)
+        if sanitized_item.get("type"):
+            input_items.append(sanitized_item)
+    return input_items
+
+
+def get_response_text(response):
+    """Extrahiert Text aus einer Responses-API-Antwort."""
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return output_text
+
+    output_items = get_response_output_items(response)
+    text_parts = []
+    for item in output_items:
+        if item.get("type") != "message":
+            continue
+        for content_item in item.get("content", []):
+            if content_item.get("type") in ("output_text", "text"):
+                text_parts.append(content_item.get("text", ""))
+    return "\n".join(part for part in text_parts if part)
+
+
+def get_response_tool_calls(response):
+    """Extrahiert Function Calls aus einer Responses-API-Antwort."""
+    tool_calls = []
+    for item in get_response_output_items(response):
+        if item.get("type") != "function_call":
+            continue
+        tool_calls.append({
+            "id": item.get("call_id"),
+            "type": "function",
+            "function": {
+                "name": item.get("name"),
+                "arguments": item.get("arguments") or "{}"
+            }
+        })
+    return tool_calls
+
+
 # ─────────────────────────────────────────────────────────
 #  Hilfsfunktionen für Bild-Erkennung in beiden Formaten
 # ─────────────────────────────────────────────────────────
@@ -277,7 +422,7 @@ def get_clean_conversation_log(messages, selfhosted=True):
 async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                     debug: bool = False, selfhosted: bool = True, api_key: str = None,
                     task_name: str = "Unbekannt", screenshots_dir: str = None,
-                    task_pokemon: list = None) -> dict:
+                    task_pokemon: list = None, log_dir: str = None) -> dict:
     """
     Startet einen Agenten-Durchlauf für eine spezifische Aufgabe.
 
@@ -292,6 +437,113 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
     total_tokens_used = {"input": 0, "cached": 0, "output": 0, "total": 0}
     saved_screenshots = []
     model_interactions = []
+    log_file = os.path.join(log_dir, "conversation_log.json") if log_dir else None
+    interactions_file = os.path.join(log_dir, "model_interactions.json") if log_dir else None
+    interactions_stream_file = os.path.join(log_dir, "model_interactions.jsonl") if log_dir else None
+    model_io_log_file = os.path.join(log_dir, "model_io_log.txt") if log_dir else None
+    tokens_file = os.path.join(log_dir, "tokens.json") if log_dir else None
+
+    def write_json_file(file_path, data):
+        if not file_path:
+            return
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(convert_to_serializable(data), f, indent=4, ensure_ascii=False, default=str)
+
+    def format_message_content(content):
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if not isinstance(block, dict):
+                    parts.append(str(block))
+                elif block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif block.get("type") == "image_url":
+                    parts.append("[Bild]")
+                else:
+                    parts.append(str(block))
+            return "\n".join(part for part in parts if part)
+        return str(content)
+
+    def format_request_for_text_log(request_messages):
+        clean_request_messages = get_clean_conversation_log(request_messages, selfhosted)
+        lines = []
+        for message in clean_request_messages:
+            role = message.get("role", "unknown")
+            content = format_message_content(message.get("content", ""))
+            if message.get("tool_calls"):
+                content += f"\nTool Calls: {json.dumps(message.get('tool_calls'), ensure_ascii=False, default=str)}"
+            if message.get("images"):
+                content += f"\nBilder: {json.dumps(message.get('images'), ensure_ascii=False, default=str)}"
+            lines.append(f"[{role}]\n{content}".strip())
+        return "\n\n".join(lines)
+
+    def format_response_for_text_log(response_payload):
+        response_data = convert_to_serializable(response_payload)
+        if isinstance(response_data, dict):
+            output_text = response_data.get("output_text")
+            if output_text:
+                return output_text
+            output_items = response_data.get("output")
+            if output_items:
+                lines = []
+                for item in output_items:
+                    if item.get("type") == "message":
+                        for content_item in item.get("content", []):
+                            if content_item.get("type") in ("output_text", "text"):
+                                lines.append(content_item.get("text", ""))
+                    elif item.get("type") == "function_call":
+                        lines.append(
+                            "Function Call: "
+                            f"{item.get('name')}({item.get('arguments') or '{}'})"
+                        )
+                if lines:
+                    return "\n".join(line for line in lines if line)
+            if "message" in response_data:
+                message = response_data.get("message") or {}
+                content = format_message_content(message.get("content", ""))
+                tool_calls = message.get("tool_calls")
+                if tool_calls:
+                    content += f"\nTool Calls: {json.dumps(tool_calls, ensure_ascii=False, default=str)}"
+                return content.strip() or json.dumps(response_data, ensure_ascii=False, default=str)
+            choices = response_data.get("choices")
+            if choices:
+                message = choices[0].get("message", {})
+                content = format_message_content(message.get("content", ""))
+                tool_calls = message.get("tool_calls")
+                if tool_calls:
+                    content += f"\nTool Calls: {json.dumps(tool_calls, ensure_ascii=False, default=str)}"
+                return content.strip() or json.dumps(response_data, ensure_ascii=False, default=str)
+        return json.dumps(response_data, ensure_ascii=False, default=str)
+
+    def append_model_io_text_log(interaction, request_messages, response_payload):
+        if not model_io_log_file:
+            return
+        os.makedirs(log_dir, exist_ok=True)
+        with open(model_io_log_file, "a", encoding="utf-8") as f:
+            f.write("\n" + "=" * 80 + "\n")
+            f.write(f"Zeit: {interaction['timestamp']}\n")
+            f.write(f"Modell: {interaction['model']}\n")
+            f.write(f"Task: {interaction['task']}\n")
+            f.write(f"Phase: {interaction['phase']}\n")
+            f.write(f"Schritt: {interaction['step']}\n")
+            f.write("-" * 80 + "\n")
+            f.write("Frage an das Modell:\n")
+            f.write(format_request_for_text_log(request_messages))
+            f.write("\n" + "-" * 80 + "\n")
+            f.write("Antwort des Modells:\n")
+            f.write(format_response_for_text_log(response_payload))
+            f.write("\n" + "-" * 80 + "\n")
+            f.write(f"Tokens: {json.dumps(interaction['tokens'], ensure_ascii=False, default=str)}\n")
+
+    def persist_runtime_logs():
+        if not log_dir:
+            return
+        os.makedirs(log_dir, exist_ok=True)
+        write_json_file(log_file, get_clean_conversation_log(messages, selfhosted))
+        write_json_file(interactions_file, model_interactions)
+        write_json_file(tokens_file, total_tokens_used)
 
     def add_tokens(t_dict):
         if t_dict:
@@ -310,7 +562,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
         return None
 
     def add_model_interaction(phase, step_number, request_messages, response_payload, token_usage, tools_payload=None):
-        model_interactions.append({
+        interaction = {
             "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
             "model": model_name,
             "task": task_name,
@@ -322,10 +574,19 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
             },
             "response": convert_to_serializable(response_payload),
             "tokens": token_usage
-        })
+        }
+        model_interactions.append(interaction)
+        if interactions_stream_file:
+            os.makedirs(log_dir, exist_ok=True)
+            with open(interactions_stream_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(convert_to_serializable(interaction), ensure_ascii=False, default=str) + "\n")
+        append_model_io_text_log(interaction, request_messages, response_payload)
+        persist_runtime_logs()
 
     if screenshots_dir:
         os.makedirs(screenshots_dir, exist_ok=True)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
 
     messages = [{"role": "system", "content": system_prompt}]
     pokemon_context_message_index = None
@@ -357,6 +618,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 "type": "function",
                 "function": {"name": t.name, "description": t.description, "parameters": t.inputSchema}
             } for t in tools_response.tools]
+            responses_tools = convert_tools_to_responses_tools(api_tools)
 
             # Initialer Kickoff
             # Hier vielleicht noch mehr Kontext geben. Instruction file, sonst vll schaß KOntext
@@ -364,6 +626,10 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 "role": "user",
                 "content": "Bitte starte die Aufgabe. Nutze das Tool 'get_state', um dir als allererstes ein Bild von der Lage zu machen. WICHTIG: Erkläre ab jetzt bei jedem Schritt kurz, was du siehst und WARUM du das nächste Tool nutzt (als reinen Text), bevor du das Tool aufrufst!"
             })
+
+            openai_input_items = [
+                create_openai_user_input(messages[-1]["content"])
+            ]
 
             refresh_pokemon_context()
 
@@ -411,25 +677,28 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                             response_message_dict = response_message
                             
                         messages.append(response_message_dict)
+                        persist_runtime_logs()
                         content_text = response_message_dict.get('content', '') or ''
                         tool_calls = response_message_dict.get('tool_calls', []) or []
                     else:
-                        resp = _openai_client.chat.completions.create(model=model_name, messages=messages, tools=api_tools)
+                        resp = _openai_client.responses.create(
+                            model=model_name,
+                            instructions=build_openai_instructions(system_prompt, task_pokemon),
+                            input=copy.deepcopy(openai_input_items),
+                            tools=responses_tools,
+                            reasoning=OPENAI_REASONING
+                        )
                         token_usage = _log_tokens(model_name, resp, selfhosted=False, task_name=task_name)
                         add_tokens(token_usage)
-                        add_model_interaction("step", steps_taken, request_messages, resp, token_usage, api_tools)
-                        choice = resp.choices[0].message
-                        # Als serialisierbares Dict speichern
-                        asst_msg = {"role": "assistant", "content": choice.content or ""}
-                        if choice.tool_calls:
-                            asst_msg["tool_calls"] = [
-                                {"id": tc.id, "type": "function",
-                                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                                for tc in choice.tool_calls
-                            ]
+                        add_model_interaction("step", steps_taken, request_messages, resp, token_usage, responses_tools)
+                        openai_input_items.extend(get_response_input_items(resp))
+                        content_text = get_response_text(resp)
+                        tool_calls = get_response_tool_calls(resp)
+                        asst_msg = {"role": "assistant", "content": content_text or ""}
+                        if tool_calls:
+                            asst_msg["tool_calls"] = tool_calls
                         messages.append(asst_msg)
-                        content_text = choice.content or ""
-                        tool_calls = choice.tool_calls or []
+                        persist_runtime_logs()
 
                 except Exception as e:
                     print(f"\n❌ API Fehler: {e}")
@@ -439,11 +708,13 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 if content_text:
                     print(f"\n🧠 [Gedanken des Modells]: {content_text.strip()}")
                 if debug:
-                    print(f"\n[DEBUG] Response: {response_message if selfhosted else choice}")
+                    print(f"\n[DEBUG] Response: {response_message if selfhosted else resp}")
 
                 if not tool_calls:
                     print("⚠️ Modell hat keine Tools aufgerufen.")
                     messages.append({"role": "user", "content": "Du musst handeln! Bitte nutze get_state() oder press_button()."})
+                    if not selfhosted:
+                        openai_input_items.append(create_openai_user_input(messages[-1]["content"]))
                     await asyncio.sleep(2)
                     continue
 
@@ -609,6 +880,11 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                                 })
                         else:
                             messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_str})
+                            openai_input_items.append({
+                                "type": "function_call_output",
+                                "call_id": tc_id,
+                                "output": result_str
+                            })
                             if image_b64:
                                 messages.append({
                                     "role": "user",
@@ -618,6 +894,10 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                                     ],
                                     "image_timestamps": [ts_label]
                                 })
+                                openai_input_items.append(create_openai_user_input(
+                                    "Hier ist der aktuelle Screenshot vom Spiel. Analysiere das Bild und treffe deine nÃ¤chste Entscheidung.",
+                                    image_b64
+                                ))
 
                     except Exception as e:
                         print(f"❌ Fehler bei Tool-Ausführung: {e}")
@@ -626,6 +906,11 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                             messages.append({"role": "tool", "name": func_name, "content": err_str})
                         else:
                             messages.append({"role": "tool", "tool_call_id": tc_id, "content": err_str})
+                            openai_input_items.append({
+                                "type": "function_call_output",
+                                "call_id": tc_id,
+                                "output": err_str
+                            })
 
                 await asyncio.sleep(2)
 
@@ -647,7 +932,8 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 # 2. Screenshot dem Modell zur Validierung senden
                 val_prompt = (
                     "Die maximale Anzahl an Schritten wurde erreicht. Bitte prüfe den aktuellen Screenshot, "
-                    "ob das Ziel der Aufgabe vielleicht im allerletzten Schritt doch noch erreicht wurde.\n\n"
+                    "ob das Ziel der Aufgabe vielleicht im allerletzten Schritt doch noch erreicht wurde. "
+                    "Sei dabei so pessimistisch wie möglich!\n\n"
                     f"Aufgabenstellung (System Prompt):\n{system_prompt}\n\n"
                     "Antworte NUR mit einem einzelnen Wort:\n"
                     "- 'JA' wenn das Ziel auf dem Screenshot eindeutig als erreicht erkennbar ist.\n"
@@ -671,6 +957,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                         add_tokens(token_usage)
                         add_model_interaction("final_validation", steps_taken, request_messages, val_response, token_usage)
                         val_answer = val_response['message'].get('content', '').strip().upper()
+                        persist_runtime_logs()
                     except Exception as e:
                         print(f"⚠️ Endvalidierungs-API-Fehler: {e}")
                         val_answer = "NEIN"
@@ -685,11 +972,19 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                     })
                     try:
                         request_messages = copy.deepcopy(val_messages)
-                        val_resp = _openai_client.chat.completions.create(model=model_name, messages=val_messages)
+                        val_input_items = copy.deepcopy(openai_input_items)
+                        val_input_items.append(create_openai_user_input(val_prompt, val_image_b64))
+                        val_resp = _openai_client.responses.create(
+                            model=model_name,
+                            instructions=build_openai_instructions(system_prompt, task_pokemon),
+                            input=val_input_items,
+                            reasoning=OPENAI_REASONING
+                        )
                         token_usage = _log_tokens(model_name, val_resp, selfhosted=False, task_name=task_name)
                         add_tokens(token_usage)
                         add_model_interaction("final_validation", steps_taken, request_messages, val_resp, token_usage)
-                        val_answer = val_resp.choices[0].message.content.strip().upper()
+                        val_answer = get_response_text(val_resp).strip().upper()
+                        persist_runtime_logs()
                     except Exception as e:
                         print(f"⚠️ Endvalidierungs-API-Fehler: {e}")
                         val_answer = "NEIN"

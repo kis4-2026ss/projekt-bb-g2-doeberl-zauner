@@ -135,11 +135,14 @@ async def main(debug=False, selfhosted=True, api_key=None, test=None):
                                         debug=debug, selfhosted=selfhosted, api_key=api_key,
                                         task_name=task.get("name", task_id),
                                         screenshots_dir=screenshots_dir,
-                                        task_pokemon=task_pokemon)
+                                        task_pokemon=task_pokemon,
+                                        log_dir=task_dir)
                 
                 # Speichere die Ergebnisse
                 log_file = os.path.join(task_dir, "conversation_log.json")
                 interactions_file = os.path.join(task_dir, "model_interactions.json")
+                interactions_stream_file = os.path.join(task_dir, "model_interactions.jsonl")
+                model_io_log_file = os.path.join(task_dir, "model_io_log.txt")
                 tokens_file = os.path.join(task_dir, "tokens.json")
                 task_result_file = os.path.join(task_dir, "result.json")
 
@@ -156,6 +159,8 @@ async def main(debug=False, selfhosted=True, api_key=None, test=None):
                     "files": {
                         "conversation_log": log_file,
                         "model_interactions": interactions_file,
+                        "model_interactions_stream": interactions_stream_file,
+                        "model_io_log": model_io_log_file,
                         "tokens": tokens_file,
                         "result": task_result_file,
                         "screenshots_dir": screenshots_dir
