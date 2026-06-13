@@ -87,3 +87,13 @@ python agent.py
 *   **Die Tastendrücke kommen nicht an:** Manche Emulatoren müssen als Administrator gestartet werden, damit `pydirectinput` funktioniert. Klicke einmal manuell in das Emulator-Fenster, bevor du das Skript startest.
 *   **Das Modell ruft keine Tools auf:** Nicht jedes Ollama-Modell beherrscht Function Calling gut. Wenn das Modell nur redet und nichts drückt, wechsle in `benchmark.py` / `agent.py` zu einem fähigeren Modell.
 *   **Out of Memory (OOM):** Vision-Modelle brauchen viel VRAM. Wenn der PC abstürzt oder sehr langsam wird, nutze ein kleineres Modell oder schließe andere VRAM-intensive Programme.
+
+
+
+
+
+## Braindump
+
+MOE - Mixture of Experts ausprobieren
+https://huggingface.co/blog/moe
+

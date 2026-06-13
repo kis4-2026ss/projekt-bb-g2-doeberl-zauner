@@ -6,6 +6,7 @@ import datetime
 import json
 import base64
 import time
+import re
 
 try:
     from mcp import ClientSession, StdioServerParameters
@@ -46,6 +47,50 @@ OPENAI_REASONING = {"effort": "low"}
 
 # Globaler OpenAI Client (wird bei Bedarf initialisiert)
 _openai_client = None
+
+
+def sanitizeSpeechText(text):
+    """Bereitet Modelltext fuer Text-to-Speech auf."""
+    if not text:
+        return ""
+    cleanText = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    cleanText = re.sub(r"`([^`]*)`", r"\1", cleanText)
+    cleanText = re.sub(r"[*_#>\[\]{}]", " ", cleanText)
+    cleanText = re.sub(r"https?://\S+", "Link", cleanText)
+    cleanText = re.sub(r"\s+", " ", cleanText).strip()
+    return cleanText[:1200]
+
+
+class VoiceOutput:
+    """Gibt Modelltexte optional ueber die lokale Windows-Sprachausgabe aus."""
+    def __init__(self, enabled=False):
+        self.enabled = enabled
+        self.engine = None
+        if self.enabled:
+            self.initializeEngine()
+
+    def initializeEngine(self):
+        """Initialisiert die lokale Text-to-Speech-Engine."""
+        try:
+            import win32com.client
+            self.engine = win32com.client.Dispatch("SAPI.SpVoice")
+        except Exception as e:
+            self.enabled = False
+            print(f"Warnung: Voice-Ausgabe konnte nicht initialisiert werden: {e}")
+
+    def speakText(self, text):
+        """Spricht einen Text, wenn Voice aktiviert ist."""
+        if not self.enabled or self.engine is None:
+            return
+        speechText = sanitizeSpeechText(text)
+        if not speechText:
+            return
+        try:
+            self.engine.Rate = 4 # Sprechgeschwindigkeit
+            self.engine.Speak(speechText, 1)
+        except Exception as e:
+            self.enabled = False
+            print(f"Warnung: Voice-Ausgabe wurde deaktiviert: {e}")
 
 def _init_openai(api_key=None):
     """Initialisiert den OpenAI Client. Nur bei selfhosted=False nötig."""
@@ -422,7 +467,8 @@ def get_clean_conversation_log(messages, selfhosted=True):
 async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                     debug: bool = False, selfhosted: bool = True, api_key: str = None,
                     task_name: str = "Unbekannt", screenshots_dir: str = None,
-                    task_pokemon: list = None, log_dir: str = None) -> dict:
+                    task_pokemon: list = None, log_dir: str = None,
+                    auto_screenshot: bool = False, voice: bool = False) -> dict:
     """
     Startet einen Agenten-Durchlauf für eine spezifische Aufgabe.
 
@@ -431,7 +477,15 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
         api_key: OpenAI API Key (nur bei selfhosted=False nötig, alternativ OPENAI_API_KEY Env-Var)
     """
     backend = "Ollama (lokal)" if selfhosted else "OpenAI API"
+    effective_system_prompt = system_prompt
+    if auto_screenshot:
+        effective_system_prompt = (
+            f"{system_prompt}\n\n"
+            "Auto-Screenshot-Modus ist aktiv: get_state steht dir nicht als Tool zur Verfuegung. "
+            "Du bekommst vor jeder Entscheidung automatisch einen aktuellen Screenshot und musst diesen analysieren."
+        )
     print(f"\n🚀 Starte Agent mit Modell: '{model_name}' via {backend} (Max Steps: {max_steps})")
+    voiceOutput = VoiceOutput(enabled=voice)
 
     # Initialisiere Token-Tracker und Screenshot-Liste
     total_tokens_used = {"input": 0, "cached": 0, "output": 0, "total": 0}
@@ -557,6 +611,44 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
             return filename
         return None
 
+    async def take_current_screenshot(session, prefix, step_number):
+        """Erstellt einen aktuellen Screenshot ueber den MCP-Server."""
+        image_b64 = None
+        tool_result = await session.call_tool("get_state", {})
+        for part in tool_result.content:
+            if part.type == "image":
+                image_b64 = part.data
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        label = f"mcp_current_state_{timestamp}"
+        if image_b64:
+            screenshot_filename = save_screenshot(image_b64, prefix, step_number)
+            if screenshot_filename:
+                label = screenshot_filename
+        return image_b64, label
+
+    def append_screenshot_message(content, image_b64, label):
+        """Haengt einen Screenshot im passenden Modellformat an die Konversation an."""
+        if not image_b64:
+            return
+        if selfhosted:
+            messages.append({
+                "role": "user",
+                "content": content,
+                "images": [image_b64],
+                "image_timestamps": [label]
+            })
+        else:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": content},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}}
+                ],
+                "image_timestamps": [label]
+            })
+            openai_input_items.append(create_openai_user_input(content, image_b64))
+
     def add_model_interaction(phase, step_number, request_messages, response_payload, token_usage, tools_payload=None):
         interaction = {
             "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -580,7 +672,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
 
-    messages = [{"role": "system", "content": system_prompt}]
+    messages = [{"role": "system", "content": effective_system_prompt}]
     pokemon_context_message_index = None
 
     def refresh_pokemon_context():
@@ -610,14 +702,26 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                 "type": "function",
                 "function": {"name": t.name, "description": t.description, "parameters": t.inputSchema}
             } for t in tools_response.tools]
+            if auto_screenshot:
+                api_tools = [tool for tool in api_tools if tool["function"]["name"] != "get_state"]
             responses_tools = convert_tools_to_responses_tools(api_tools)
 
             # Initialer Kickoff
+            kickoff_text = (
+                "Bitte starte die Aufgabe. Du bekommst automatisch vor jeder Entscheidung einen aktuellen Screenshot vom Spiel. "
+                "Nutze kein get_state-Tool, sondern analysiere den jeweils mitgegebenen Screenshot. "
+                "WICHTIG: Erklaere ab jetzt bei jedem Schritt kurz, was du siehst und WARUM du das naechste Tool nutzt (als reinen Text), bevor du das Tool aufrufst!"
+            ) if auto_screenshot else (
+                "Bitte starte die Aufgabe. Nutze das Tool 'get_state', um dir als allererstes ein Bild von der Lage zu machen. "
+                "WICHTIG: Erklaere ab jetzt bei jedem Schritt kurz, was du siehst und WARUM du das naechste Tool nutzt (als reinen Text), bevor du das Tool aufrufst!"
+            )
             # Hier vielleicht noch mehr Kontext geben. Instruction file, sonst vll schaß KOntext
             messages.append({
                 "role": "user",
                 "content": "Bitte starte die Aufgabe. Nutze das Tool 'get_state', um dir als allererstes ein Bild von der Lage zu machen. WICHTIG: Erkläre ab jetzt bei jedem Schritt kurz, was du siehst und WARUM du das nächste Tool nutzt (als reinen Text), bevor du das Tool aufrufst!"
             })
+
+            messages[-1]["content"] = kickoff_text
 
             openai_input_items = [
                 create_openai_user_input(messages[-1]["content"])
@@ -630,12 +734,24 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
             finish_reason = "Max steps reached"
 
             while steps_taken < max_steps:
+                voiceOutput.engine.WaitUntilDone(-1)
                 steps_taken += 1
                 print(f"\n--- Schritt {steps_taken}/{max_steps} ---")
                 print(f"🧠 {'Ollama' if selfhosted else 'OpenAI'} ({model_name}) überlegt...")
 
                 refresh_pokemon_context()
                 messages = cleanup_history_to_save_context(messages, selfhosted=selfhosted)
+
+                if auto_screenshot:
+                    try:
+                        image_b64, image_label = await take_current_screenshot(session, "auto_step", steps_taken)
+                        append_screenshot_message(
+                            "Hier ist der aktuelle Screenshot vom Spiel. Analysiere das Bild und treffe deine naechste Entscheidung.",
+                            image_b64,
+                            image_label
+                        )
+                    except Exception as e:
+                        print(f"Warnung: Automatischer Screenshot fehlgeschlagen: {e}")
 
                 # ── API-Aufruf ──
                 try:
@@ -675,7 +791,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                     else:
                         resp = _openai_client.responses.create(
                             model=model_name,
-                            instructions=build_openai_instructions(system_prompt, task_pokemon),
+                            instructions=build_openai_instructions(effective_system_prompt, task_pokemon),
                             input=copy.deepcopy(openai_input_items),
                             tools=responses_tools,
                             reasoning=OPENAI_REASONING
@@ -699,12 +815,14 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
 
                 if content_text:
                     print(f"\n🧠 [Gedanken des Modells]: {content_text.strip()}")
+                    voiceOutput.speakText(content_text)
                 if debug:
                     print(f"\n[DEBUG] Response: {response_message if selfhosted else resp}")
 
                 if not tool_calls:
                     print("⚠️ Modell hat keine Tools aufgerufen.")
-                    messages.append({"role": "user", "content": "Du musst handeln! Bitte nutze get_state() oder press_button()."})
+                    retry_text = "Du musst handeln! Bitte nutze eines der verfuegbaren Tools." if auto_screenshot else "Du musst handeln! Bitte nutze get_state() oder press_button()."
+                    messages.append({"role": "user", "content": retry_text})
                     if not selfhosted:
                         openai_input_items.append(create_openai_user_input(messages[-1]["content"]))
                     await asyncio.sleep(2)
@@ -722,6 +840,19 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                         func_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                         tc_id = tc.id if hasattr(tc, 'id') else tc.get('id')
 
+                    if auto_screenshot and func_name == "get_state":
+                        result_str = "get_state ist im Auto-Screenshot-Modus nicht als Agenten-Tool verfuegbar. Der aktuelle Screenshot wird automatisch bereitgestellt."
+                        if selfhosted:
+                            messages.append({"role": "tool", "name": func_name, "content": result_str})
+                        else:
+                            messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_str})
+                            openai_input_items.append({
+                                "type": "function_call_output",
+                                "call_id": tc_id,
+                                "output": result_str
+                            })
+                        continue
+
                     print(f"🛠️ [Führe Tool aus]: {func_name}({func_args})")
 
                     try:
@@ -734,124 +865,6 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                                 image_b64 = part.data
                                 tool_text_result.append("Screenshot erfolgreich erstellt.")
                         result_str = "\n".join(tool_text_result)
-
-                        # Benchmark-Signal prüfen --> Validierung mit Screenshot
-#                        if "BENCHMARK_SIGNAL: TASK_COMPLETED" in result_str:
-#                            # Dieser Schritt zählt NICHT --> zurücksetzen
-#                            steps_taken -= 1
-#                            print(f"\n🔍 Task-Completed aufgerufen. Starte Validierung mit Screenshot...")
-#
-#                            if selfhosted:
-#                                messages.append({"role": "tool", "name": func_name, "content": result_str})
-#                            else:
-#                                messages.append({"role": "tool", "tool_call_id": tc_id, "content": result_str})
-#
-#                            # 1. Screenshot machen über MCP
-#                            val_image_b64 = None
-#                            try:
-#                                validation_screenshot = await session.call_tool("get_state", {})
-#                                for part in validation_screenshot.content:
-#                                    if part.type == "image":
-#                                        val_image_b64 = part.data
-#                            except Exception as ve:
-#                                print(f"⚠️ Validierungs-Screenshot fehlgeschlagen: {ve}")
-#
-#                            if val_image_b64:
-#                                val_ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-#                                val_filename = save_screenshot(val_image_b64, "validation", steps_taken)
-#                                val_label = val_filename or f"mcp_current_state_{val_ts}"
-#
-#                                # 2. Screenshot dem Modell zur Validierung senden
-#                                val_prompt = (
-#                                    f"Du hast behauptet, die Aufgabe abgeschlossen zu haben. Grund: {result_str}\n\n"
-#                                    "Hier ist ein aktueller Screenshot des Spiels. Prüfe GENAU ob die Aufgabe "
-#                                    "wirklich erfolgreich erledigt wurde.\n\n"
-#                                    "Antworte NUR mit einem einzelnen Wort:\n"
-#                                    "- 'JA' wenn die Aufgabe auf dem Screenshot eindeutig als erledigt erkennbar ist.\n"
-#                                    "- 'NEIN' wenn die Aufgabe NICHT erledigt ist oder du dir unsicher bist."
-#                                )
-#
-#                                if selfhosted:
-#                                    messages.append({
-#                                        "role": "user",
-#                                        "content": val_prompt,
-#                                        "images": [val_image_b64],
-#                                        "image_timestamps": [val_label]
-#                                    })
-#                                    try:
-#                                        request_messages = copy.deepcopy(messages)
-#                                        val_response = ollama.chat(model=model_name, messages=messages)
-#                                        token_usage = _log_tokens(model_name, val_response, selfhosted=True, task_name=task_name)
-#                                        add_tokens(token_usage)
-#                                        add_model_interaction("validation", steps_taken, request_messages, val_response, token_usage)
-#                                        val_msg = val_response['message']
-#                                        if isinstance(val_msg, dict):
-#                                            val_answer = val_msg.get('content', '').strip().upper()
-#                                            val_msg_copy = val_msg
-#                                        else:
-#                                            val_answer = getattr(val_msg, 'content', '').strip().upper()
-#                                            val_msg_copy = {
-#                                                "role": getattr(val_msg, "role", "assistant"),
-#                                                "content": getattr(val_msg, "content", "")
-#                                            }
-#                                        messages.append(val_msg_copy)
-#                                    except Exception as e:
-#                                        print(f"⚠️ Validierungs-API-Fehler: {e}")
-#                                        val_answer = "NEIN"
-#                                        messages.append({"role": "assistant", "content": "NEIN (Fehler bei API)"})
-#                                else:
-#                                    messages.append({
-#                                        "role": "user",
-#                                        "content": [
-#                                            {"type": "text", "text": val_prompt},
-#                                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
-#                                        ],
-#                                        "image_timestamps": [val_label]
-#                                    })
-#                                    try:
-#                                        request_messages = copy.deepcopy(messages)
-#                                        val_resp = _openai_client.responses.create(model=model_name, messages=messages, instructions=system_prompt, reasoning_effort="low")
-#                                        token_usage = _log_tokens(model_name, val_resp, selfhosted=False, task_name=task_name)
-#                                        add_tokens(token_usage)
-#                                        add_model_interaction("validation", steps_taken, request_messages, val_resp, token_usage)
-#                                        val_choice = val_resp.choices[0].message
-#                                        val_answer = val_choice.content.strip().upper()
-#                                        messages.append({"role": "assistant", "content": val_choice.content or ""})
-#                                    except Exception as e:
-#                                        print(f"⚠️ Validierungs-API-Fehler: {e}")
-#                                        val_answer = "NEIN"
-#                                        messages.append({"role": "assistant", "content": "NEIN (Fehler bei API)"})
-#
-#                                print(f"🔍 Validierungs-Ergebnis: {val_answer}")
-#
-#                                if val_answer.startswith("JA"):
-#                                    success, finish_reason = True, result_str
-#                                    print(f"\n🎉 AUFGABE VALIDIERT UND ERFOLGREICH BEENDET!")
-#                                    return create_result(success, steps_taken, finish_reason, messages, selfhosted,
-#                                                         total_tokens_used, saved_screenshots, model_interactions)
-#                                else:
-#                                    print("❌ Validierung fehlgeschlagen! Aufgabe ist NICHT erledigt. Agent macht weiter.")
-#                                    messages.append({
-#                                        "role": "user",
-#                                        "content": "Die Validierung hat ergeben, dass die Aufgabe NICHT abgeschlossen ist. "
-#                                                   "Bitte analysiere den aktuellen Screenshot erneut und mache weiter!",
-#                                        "images": [val_image_b64],
-#                                        "image_timestamps": [val_label]
-#                                    } if selfhosted else {
-#                                        "role": "user",
-#                                        "content": [
-#                                            {"type": "text", "text": "Die Validierung hat ergeben, dass die Aufgabe NICHT abgeschlossen ist. "
-#                                                                     "Bitte analysiere den aktuellen Screenshot erneut und mache weiter!"},
-#                                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{val_image_b64}"}}
-#                                        ],
-#                                        "image_timestamps": [val_label]
-#                                    })
-#                                    continue  # Nächster Schleifendurchlauf (ohne Step-Verbrauch)
-#                            else:
-#                                # Kein Screenshot möglich → sicherheitshalber weitermachen
-#                                print("⚠️ Kein Validierungs-Screenshot möglich. Agent macht weiter.")
-#                                messages.append({"role": "user", "content": "Validierung konnte nicht durchgeführt werden. Mache weiter mit der Aufgabe."})
-#                                continue
 
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                         ts_label = f"mcp_current_state_{timestamp}"
@@ -968,7 +981,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
                         val_input_items.append(create_openai_user_input(val_prompt, val_image_b64))
                         val_resp = _openai_client.responses.create(
                             model=model_name,
-                            instructions=build_openai_instructions(system_prompt, task_pokemon),
+                            instructions=build_openai_instructions(effective_system_prompt, task_pokemon),
                             input=val_input_items,
                             reasoning=OPENAI_REASONING
                         )
@@ -1020,9 +1033,15 @@ if __name__ == "__main__":
     parser.add_argument("--selfhosted", default="true", help="'true' = Ollama lokal, 'false' = OpenAI API (default: true)")
     parser.add_argument("--api-key", default=None, help="OpenAI API Key (alternativ: OPENAI_API_KEY Env-Var)")
     parser.add_argument("--model", default=None, help="Modellname (default: llama3.2-vision / gpt-4o)")
+    parser.add_argument("--autoScreenShot", default="Off", choices=["On", "Off", "on", "off"],
+                        help="'On' = Screenshot wird automatisch vor jeder Agentenentscheidung erstellt, 'Off' = Agent nutzt get_state selbst (default: Off)")
+    parser.add_argument("--Voice", default="Off", choices=["On", "Off", "on", "off"],
+                        help="'On' = Modellgedanken werden per Text-to-Speech gesprochen, 'Off' = keine Sprachausgabe (default: Off)")
     args = parser.parse_args()
 
     selfhosted = args.selfhosted.lower() == "true"
+    auto_screenshot = args.autoScreenShot.lower() == "on"
+    voice = args.Voice.lower() == "on"
     default_model = "llama3.2-vision" if selfhosted else "gpt-4o" # UMAENDERN AUF DIE RICHTIGEN DEFAULT MODELLE! WARUM ZUM FICK EIN VISIO MODEL?!??!!??!
     model = args.model or default_model
 
@@ -1038,6 +1057,8 @@ if __name__ == "__main__":
         except FileNotFoundError:
             pass
         await run_agent(model_name=model, system_prompt=prompt, max_steps=50,
-                        debug=args.debug, selfhosted=selfhosted, api_key=args.api_key)
+                        debug=args.debug, selfhosted=selfhosted, api_key=args.api_key,
+                        auto_screenshot=auto_screenshot,
+                        voice=voice)
 
     asyncio.run(run_default())

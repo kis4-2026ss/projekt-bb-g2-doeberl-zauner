@@ -48,7 +48,7 @@ MODELS_OPENAI = [ # Geld In, Cached, out
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 RESULTS_BASE_DIR = os.path.join(PROJECT_ROOT, "results")
 
-async def main(debug=False, selfhosted=True, api_key=None, test=None):
+async def main(debug=False, selfhosted=True, api_key=None, test=None, auto_screenshot=False, voice=False):
     # Erstelle einen Unterordner mit Zeitstempel für jeden Benchmark-Durchlauf
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_dir = os.path.join(RESULTS_BASE_DIR, timestamp)
@@ -136,7 +136,9 @@ async def main(debug=False, selfhosted=True, api_key=None, test=None):
                                         task_name=task.get("name", task_id),
                                         screenshots_dir=screenshots_dir,
                                         task_pokemon=task_pokemon,
-                                        log_dir=task_dir)
+                                        log_dir=task_dir,
+                                        auto_screenshot=auto_screenshot,
+                                        voice=voice)
                 
                 # Speichere die Ergebnisse
                 log_file = os.path.join(task_dir, "conversation_log.json")
@@ -219,14 +221,20 @@ if __name__ == "__main__":
                         help="'true' = Ollama lokal, 'false' = OpenAI API (default: true)")
     parser.add_argument("--api-key", default=None,
                         help="OpenAI API Key (alternativ: OPENAI_API_KEY Umgebungsvariable)")
+    parser.add_argument("--autoScreenShot", default="Off", choices=["On", "Off", "on", "off"],
+                        help="'On' = Screenshot wird automatisch vor jeder Agentenentscheidung erstellt, 'Off' = Agent nutzt get_state selbst (default: Off)")
+    parser.add_argument("--Voice", default="Off", choices=["On", "Off", "on", "off"],
+                        help="'On' = Modellgedanken werden per Text-to-Speech gesprochen, 'Off' = keine Sprachausgabe (default: Off)")
     args = parser.parse_args()
 
     selfhosted = args.selfhosted.lower() == "true"
     test =       args.test
+    auto_screenshot = args.autoScreenShot.lower() == "on"
+    voice = args.Voice.lower() == "on"
 
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     try:
-        asyncio.run(main(debug=args.debug, selfhosted=selfhosted, api_key=args.api_key, test=test))
+        asyncio.run(main(debug=args.debug, selfhosted=selfhosted, api_key=args.api_key, test=test, auto_screenshot=auto_screenshot, voice=voice))
     except KeyboardInterrupt:
         pass # Verhindert unschöne Tracebacks beim Beenden

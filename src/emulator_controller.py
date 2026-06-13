@@ -71,6 +71,7 @@ def get_emulator_window(target, is_pid=False):
             for w in gw.getAllTitles():
                 if w.strip():
                     logger.info(f" - {w}")
+        exit(f"Fehler: Fenster mit dem Titel '{window_title}' nicht gefunden.")
         return None
     
     return windows[0]
