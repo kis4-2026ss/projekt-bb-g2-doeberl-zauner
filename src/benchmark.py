@@ -7,7 +7,7 @@ import datetime
 import argparse
 import keyboard
 
-from agent import run_agent
+from agent import DEFAULT_VOICE_TEST_TEXT, run_agent, speakBenchmarkIntro
 import emulator_controller
 
 class BenchmarkEncoder(json.JSONEncoder):
@@ -48,7 +48,7 @@ MODELS_OPENAI = [ # Geld In, Cached, out
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 RESULTS_BASE_DIR = os.path.join(PROJECT_ROOT, "results")
 
-async def main(debug=False, selfhosted=True, api_key=None, test=None, auto_screenshot=False, voice=False):
+async def main(debug=False, selfhosted=True, api_key=None, test=None, auto_screenshot=False, voice=False, voice_test_text=None):
     # Erstelle einen Unterordner mit Zeitstempel für jeden Benchmark-Durchlauf
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_dir = os.path.join(RESULTS_BASE_DIR, timestamp)
@@ -97,6 +97,13 @@ async def main(debug=False, selfhosted=True, api_key=None, test=None, auto_scree
         print("=" * 60)
         print("=" * 60)
         return
+
+    if voice:
+        speakBenchmarkIntro(
+            selfhosted=selfhosted,
+            api_key=api_key,
+            output_dir=run_dir
+        )
     try:
         for model in models:
             if cancel_requested:
@@ -225,6 +232,8 @@ if __name__ == "__main__":
                         help="'On' = Screenshot wird automatisch vor jeder Agentenentscheidung erstellt, 'Off' = Agent nutzt get_state selbst (default: Off)")
     parser.add_argument("--Voice", default="Off", choices=["On", "Off", "on", "off"],
                         help="'On' = Modellgedanken werden per Text-to-Speech gesprochen, 'Off' = keine Sprachausgabe (default: Off)")
+    parser.add_argument("--VoiceTestText", default=DEFAULT_VOICE_TEST_TEXT,
+                        help="Text, der vor dem eigentlichen Benchmark als Text-to-Speech-Test vorgelesen wird")
     args = parser.parse_args()
 
     selfhosted = args.selfhosted.lower() == "true"
@@ -235,6 +244,6 @@ if __name__ == "__main__":
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     try:
-        asyncio.run(main(debug=args.debug, selfhosted=selfhosted, api_key=args.api_key, test=test, auto_screenshot=auto_screenshot, voice=voice))
+        asyncio.run(main(debug=args.debug, selfhosted=selfhosted, api_key=args.api_key, test=test, auto_screenshot=auto_screenshot, voice=voice, voice_test_text=args.VoiceTestText))
     except KeyboardInterrupt:
         pass # Verhindert unschöne Tracebacks beim Beenden

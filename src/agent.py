@@ -7,6 +7,12 @@ import json
 import base64
 import time
 import re
+import tempfile
+from pydub import AudioSegment
+import winsound
+import tempfile
+import os
+
 
 try:
     from mcp import ClientSession, StdioServerParameters
@@ -78,7 +84,7 @@ class VoiceOutput:
             self.enabled = False
             print(f"Warnung: Voice-Ausgabe konnte nicht initialisiert werden: {e}")
 
-    def speakText(self, text):
+    def speakText(self, text, speed):
         """Spricht einen Text, wenn Voice aktiviert ist."""
         if not self.enabled or self.engine is None:
             return
@@ -86,11 +92,98 @@ class VoiceOutput:
         if not speechText:
             return
         try:
-            self.engine.Rate = 4 # Sprechgeschwindigkeit
+            self.engine.Rate = speed # Sprechgeschwindigkeit
             self.engine.Speak(speechText, 1)
         except Exception as e:
             self.enabled = False
             print(f"Warnung: Voice-Ausgabe wurde deaktiviert: {e}")
+
+
+DEFAULT_VOICE_TEST_TEXT = (
+"Pokémon Smaragd ist ein Rollenspiel für den Game Boy Advance und die erweiterte Version von Pokémon Rubin und Saphir. "
+"Du spielst einen jungen Trainer in der Region Hoenn, sammelst Pokémon, besiegst Arenaleiter und trittst gegen die Top Vier an. "
+"Die Handlung dreht sich um die rivalisierenden Teams Team Aqua und Team Magma, die mit den legendären Pokémon Kyogre und Groudon das Gleichgewicht der Welt bedrohen. "
+"Eine zentrale Rolle spielt außerdem Rayquaza."
+
+"Ein Pokémonkampf ist ein rundenbasierter Kampf zwischen Pokémon."
+
+"Jede Runde wählst du eine Aktion aus:"
+
+"Attacke einsetzen: Dein Pokémon greift mit einer seiner Attacken an."
+"Pokémon wechseln: Du tauschst dein aktives Pokémon gegen ein anderes aus deinem Team."
+"Item verwenden: Du nutzt zum Beispiel einen Trank oder einen Pokéball."
+"Fliehen: In wilden Kämpfen kannst du versuchen zu entkommen."
+
+"Das Ziel ist, die KP des gegnerischen Pokémon auf 0 zu senken. Dann gilt es als besiegt. Wichtig sind dabei:"
+
+"Typen: Wasser ist zum Beispiel stark gegen Feuer."
+"Statuswerte: Angriff, Verteidigung, Initiative usw."
+"Statusprobleme: Schlaf, Paralyse, Vergiftung oder Verbrennung."
+"Attackenstärke und Genauigkeit: Starke Attacken treffen oft nicht immer sicher."
+
+"Ein Kampf endet, wenn alle Pokémon eines Trainers besiegt sind oder du bei wilden Pokémon fliehst beziehungsweise es fängst."
+)
+
+
+def playWaveFile(filePath):
+    """Spielt eine WAV-Datei ueber die lokale Windows-Audioausgabe ab."""
+    try:
+        import winsound
+        winsound.PlaySound(filePath, winsound.SND_FILENAME)
+        return True
+    except Exception as e:
+        print(f"Warnung: Audiodatei konnte nicht abgespielt werden: {e}")
+        return False
+
+# Diese Funktion spielt eine WAV-Datei mit angepasster Geschwindigkeit ab.
+def PlaySoundWithSpeed(filePath, speedFactor):
+    sound = AudioSegment.from_file(filePath)
+
+    changedSound = sound._spawn(
+        sound.raw_data,
+        overrides={
+            "frame_rate": int(sound.frame_rate * speedFactor)
+        }
+    )
+
+    changedSound = changedSound.set_frame_rate(sound.frame_rate)
+
+    tempFile = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    tempFile.close()
+
+    changedSound.export(tempFile.name, format="wav")
+
+    try:
+        winsound.PlaySound(tempFile.name, winsound.SND_FILENAME)
+    finally:
+        os.remove(tempFile.name)
+
+def speakBenchmarkIntro(selfhosted=True, api_key=None, output_dir=None):
+    """Spricht vor dem Benchmark einen kurzen TTS-Test."""
+    speechText = DEFAULT_VOICE_TEST_TEXT
+    if selfhosted:
+        voiceOutput = VoiceOutput(enabled=True)
+        voiceOutput.speakText(speechText, 3)
+        return
+
+    _init_openai(api_key)
+    targetDir = output_dir or tempfile.gettempdir()
+    os.makedirs(targetDir, exist_ok=True)
+    speechFilePath = os.path.join(targetDir, "openai_tts_intro.wav")
+    print("Starte OpenAI Text-to-Speech-Test vor dem Benchmark...")
+
+    try:
+        # with _openai_client.audio.speech.with_streaming_response.create(
+        #     model="gpt-4o-mini-tts",
+        #     voice="marin",
+        #     input=speechText,
+        #     instructions="Sprich mit voller Motivation auf das Pokemon-Spiel auf Deutsch.",
+        #     response_format="wav"
+        # ) as response:
+        #     response.stream_to_file(speechFilePath)
+        PlaySoundWithSpeed(speechFilePath, 1.5)
+    except Exception as e:
+        print(f"Warnung: OpenAI Text-to-Speech-Test fehlgeschlagen: {e}")
 
 def _init_openai(api_key=None):
     """Initialisiert den OpenAI Client. Nur bei selfhosted=False nötig."""
@@ -733,6 +826,8 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
             success = False
             finish_reason = "Max steps reached"
 
+            voiceOutput.speakText("Hallo Ihr Knechte! Lasst uns mal Pokemon spielen! Wir Kämpfen nun mal gegen Geckabor mit unserem geilen Hydropy", 2)
+
             while steps_taken < max_steps:
                 voiceOutput.engine.WaitUntilDone(-1)
                 steps_taken += 1
@@ -815,7 +910,7 @@ async def run_agent(model_name: str, system_prompt: str, max_steps: int,
 
                 if content_text:
                     print(f"\n🧠 [Gedanken des Modells]: {content_text.strip()}")
-                    voiceOutput.speakText(content_text)
+                    voiceOutput.speakText(content_text, 3)
                 if debug:
                     print(f"\n[DEBUG] Response: {response_message if selfhosted else resp}")
 
